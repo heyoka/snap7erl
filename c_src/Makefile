@@ -45,8 +45,7 @@ Libs			:= $(LibrarySwitch)pthread $(LibrarySwitch)rt
 LibExt      	:=so
 ifeq ($(shell uname -m), $(filter $(shell uname -m),x86_64 i386))   
 TargetCPU  		:=$(shell uname -m)
-else
-ifeq($(shell uname -m), $(filter $(shell uname -m), armv7l))
+else ifeq($(shell uname -m), $(filter $(shell uname -m), armv7l))
 TargetCPU       :=arm_v7
 else
 $(error processor not supported $(shell uname -m || echo))
