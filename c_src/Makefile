@@ -28,8 +28,10 @@ endif
 PREFIX = $(MIX_COMPILE_PATH)/priv
 BUILD  = $(MIX_COMPILE_PATH)/obj
 BUILD_ERL = $(MIX_COMPILE_PATH)/c_src
-ERL_EI_INCLUDE_DIR = /home/heyoka/.asdf/installs/erlang/22.0.1/usr/include
-ERL_EI_LIBDIR = /home/heyoka/.asdf/installs/erlang/22.0.1/usr/lib
+ERL_EI = `erl -eval \
+           'io:format("~s~n", [code:root_dir()])' -s init stop -noshell`
+ERL_EI_INCLUDE_DIR = $(ERL_EI)/usr/include
+ERL_EI_LIBDIR = $(ERL_EI)/usr/lib
 
 
 ##
@@ -43,7 +45,8 @@ Libs			:= $(LibrarySwitch)pthread $(LibrarySwitch)rt
 LibExt      	:=so
 ifeq ($(shell uname -m), $(filter $(shell uname -m),x86_64 i386))   
 TargetCPU  		:=$(shell uname -m)
-else ifeq($(shell uname -m), $(filter $(shell uname -m), armv7l))
+else
+ifeq($(shell uname -m), $(filter $(shell uname -m), armv7l))
 TargetCPU       :=arm_v7
 else
 $(error processor not supported $(shell uname -m || echo))
