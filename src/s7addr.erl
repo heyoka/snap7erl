@@ -2,9 +2,13 @@
 %%% @author heyoka
 %%% @copyright (C) 2019
 %%% @doc
+%%%
 %%% siemens s7 addressing
 %%% (simatic (german) and IEC (english) mnemonics are supported)
-%%% @see https://www.npmjs.com/package/node-red-contrib-s7 for addressing
+%%%
+%%% node-red-contib-s7 style of addressing is supported
+%%% @see https://www.npmjs.com/package/node-red-contrib-s7
+%%%
 %%% no peripheral addresses supported, no string addresses supported!
 %%%
 %%% @todo handle string type
@@ -42,7 +46,7 @@ do_parse([<<First/binary>>]) ->
 %% db address step7 style
 do_parse([<<"DB", _DbNumber/binary>> = First, <<"DB", Part2/binary>>]) ->
    do_parse([First, Part2]);
-%% db address nodered style
+%% db address node-red style
 do_parse([<<"DB", DbNumber/binary>>, Part2]) ->
    P = #{area => db, amount => 1, db_number => binary_to_integer(DbNumber)},
    Parts = binary:split(Part2, <<".">>, [trim_all]),
