@@ -7,8 +7,7 @@ Note: the snap7 sources are included in this library at the moment.
 
 Supported architectures
 ----------------------
-
-Sucessfully builds on:
+Sucessfully builds and tested on:
 
 + Linux i386
 + Linux amd64
