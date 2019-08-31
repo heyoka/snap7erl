@@ -5,6 +5,18 @@ Erlang only version of https://github.com/valiot/snapex7
 
 Note: the snap7 sources are included in this library at the moment.
 
+Supported architectures
+----------------------
+
+Sucessfully builds on:
+
++ Linux i386
++ Linux amd64
++ Linux armv6
++ Linux armv7
++ Linux armv7l
+
+
 Build
 -----
 
