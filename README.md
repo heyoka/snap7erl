@@ -10,7 +10,7 @@ Supported architectures
 Sucessfully builds and tested on:
 
 + Linux i386
-+ Linux amd64
++ Linux x86_64
 + Linux armv6
 + Linux armv7
 + Linux armv7l
