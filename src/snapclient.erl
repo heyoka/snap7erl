@@ -31,6 +31,9 @@
 
 -export([set_session_password/2, clear_session_password/1, get_protection/1, list_blocks/1]).
 
+%% misc
+-export([get_exec_time/1, get_last_error/1, get_pdu_length/1]).
+
 %% gen_server callbacks
 -export([init/1,
    handle_call/3,
@@ -587,6 +590,27 @@ get_protection(Pid) ->
 
 %%% Misc Functions
 
+
+%%% @doc
+%% Returns the last job execution time in miliseconds.
+%%
+-spec get_exec_time(pid()) -> {ok, integer()} | {error, map()} | {error, einval}.
+get_exec_time(Pid) ->
+   gen_server:call(Pid, get_exec_time).
+
+%%% @doc
+%%  Returns the last job result.
+%%
+-spec get_last_error(pid()) -> {ok, map()} | {error, map()} | {error, einval}.
+get_last_error(Pid) ->
+   gen_server:call(Pid, get_last_error).
+
+%%% @doc
+%% Returns info about the PDU length.
+%%
+-spec get_pdu_length(pid()) -> {ok, list()} | {error, map()} | {error, einval}.
+get_pdu_length(Pid) ->
+   gen_server:call(Pid, get_pdu_length).
 
 
 
