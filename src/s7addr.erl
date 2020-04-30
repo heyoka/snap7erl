@@ -19,7 +19,11 @@
 -author("heyoka").
 
 %% API
--export([parse/1]).
+-export([parse/1, parse/2]).
+
+-spec parse(binary(), return_list) -> list().
+parse(Address, return_list) when is_binary(Address) ->
+   maps:to_list(parse(Address)).
 
 -spec parse(binary()) -> map().
 parse(Address) when is_binary(Address) ->

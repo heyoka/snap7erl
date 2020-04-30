@@ -35,6 +35,5 @@ Useage
     
     %% read a DB with addressing
     A = <<"DB4.DBR2">>,
-    RMap = s7addr:parse(A),
-    Par = maps:to_list(CMap),
-    snapclient:db_read(Client, Par).
+    ParamList = s7addr:parse(A, return_list), 
+    snapclient:db_read(Client, ParamList).
