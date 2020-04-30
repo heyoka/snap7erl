@@ -768,6 +768,28 @@ handle_call(get_plc_date_time, _From, State) ->
    Response = call_port(State, get_plc_date_time, nil),
    {reply, Response, State};
 
+handle_call(get_protection, _From, State) ->
+   Response = call_port(State, get_protection, nil),
+   {reply, Response, State};
+
+%%%%%%%%%%%%% MISC %%%%%%%%
+
+handle_call(get_exec_time, _From, State) ->
+   Response = call_port(State, get_exec_time, nil),
+   {reply, Response, State};
+
+handle_call(get_last_error, _From, State) ->
+   Response = call_port(State, get_last_error, nil),
+   {reply, Response, State};
+
+handle_call(get_pdu_length, _From, State) ->
+   Res = call_port(State, get_pdu_length, nil),
+   Response =
+   case Res of
+      {ok, [{'Requested', _}, {'Negotiated', PduLength}]} -> {ok, PduLength};
+      _ -> {ok, 0}
+   end,
+   {reply, Response, State};
 
 %%%
 %% some are missing
@@ -785,6 +807,10 @@ handle_call(get_cpu_info, _From, State) ->
 
 handle_call(get_cp_info, _From, State) ->
    Response = call_port(State, get_cp_info, nil),
+   {reply, Response, State};
+
+handle_call(get_plc_status, _From, State) ->
+   Response = call_port(State, get_plc_status, nil),
    {reply, Response, State};
 
 %% call all simple commands with no params
@@ -846,7 +872,7 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 -spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
     State :: #state{}) -> term()).
-terminate(_Reason, State=#state{port = Port}) ->
+terminate(_Reason, _State=#state{port = Port}) ->
    catch erlang:port_close(Port).
 
 %%--------------------------------------------------------------------
