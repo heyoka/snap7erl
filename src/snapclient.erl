@@ -29,7 +29,7 @@
    get_plc_date_time/1,
    get_cpu_info/1, get_cp_info/1, get_plc_status/1]).
 
--export([set_session_password/2, clear_session_password/1, get_protection/1, list_blocks/1]).
+-export([set_session_password/2, clear_session_password/1, get_protection/1, list_blocks/1, list_blocks_of_type/3]).
 
 %% misc
 -export([get_exec_time/1, get_last_error/1, get_pdu_length/1]).
@@ -532,6 +532,12 @@ write_multi_vars(Pid, Opts) ->
 list_blocks(Pid) ->
    gen_server:call(Pid, list_blocks).
 
+%%% @doc
+%%%  This function returns the AG list of a specified block type.
+%%%
+-spec list_blocks_of_type(pid(), atom(), integer()) -> {ok, list()} | {error, term()} | {error, einval}.
+list_blocks_of_type(Pid, BlockType, Num) ->
+   gen_server:call(Pid, {list_blocks_of_type, BlockType, Num}).
 
 %% @doc
 %% Reads PLC date and time, if successful, returns `{ok, Date, Time}`
@@ -752,6 +758,10 @@ handle_call({write_multi_vars, Opts}, _From, State) ->
    {reply, Response, State};
 
 
+
+
+
+
 %%%%%%%%
 % other IO missing for the moment
 %%%%%%%%
@@ -759,7 +769,12 @@ handle_call({write_multi_vars, Opts}, _From, State) ->
 %%%%% directory
 
 handle_call(list_blocks, _From, State) ->
-   Res = call_simple(State, list_blocks),
+   Res = call_port(State, list_blocks, nil),
+   {reply, Res, State};
+
+handle_call({list_blocks_of_type, BlockType, NItems}, _From, State) ->
+   BlockValue = proplists:get_value(BlockType, ?BLOCK_TYPES),
+   Res = call_port(State, list_blocks_of_type, {BlockValue, NItems}),
    {reply, Res, State};
 
 %%%%%
@@ -872,7 +887,8 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 -spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
     State :: #state{}) -> term()).
-terminate(_Reason, _State=#state{port = Port}) ->
+terminate(_Reason, State=#state{port = Port}) ->
+   catch call_port(State, disconnect, nil),
    catch erlang:port_close(Port).
 
 %%--------------------------------------------------------------------
