@@ -667,7 +667,7 @@ init([]) ->
    {ok, #state{port = Port}};
 init(#{owner := Owner, handle_connect := true, ip := Ip, rack := Rack, slot := Slot} = _Opts) ->
    {ok, State} = init([]),
-   Recon = recon:new(
+   Recon = reconnect:new(
       {?RECON_MIN_INTERVAL, ?RECON_MAX_INTERVAL, ?RECON_MAX_RETRIES}),
    erlang:send_after(0, self(), reconnect),
    {ok, State#state{
@@ -946,7 +946,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 try_reconnect(State=#state{reconnector = Reconnector}) ->
-   case recon:execute(Reconnector, reconnect) of
+   case reconnect:execute(Reconnector, reconnect) of
       {ok, Reconnector1} ->
          {noreply, State#state{reconnector = Reconnector1}};
       {stop, Error} -> logger:error("[Client: ~p] PLC reconnect error: ~p!",[?MODULE, Error]),
