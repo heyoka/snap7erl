@@ -15,7 +15,7 @@
 %% API
 -export([start_link/1, stop/1,
    connect_to/2, set_connection_type/2, set_connection_params/2,
-   connect/1, disconnect/1, get_params/2, set_params/3, start/1]).
+   connect/1, disconnect/1, get_params/2, set_params/3, start/1, start_connect/1]).
 
 -export([
    read_area/2, write_area/2,
@@ -29,10 +29,19 @@
    get_plc_date_time/1,
    get_cpu_info/1, get_cp_info/1, get_plc_status/1]).
 
--export([set_session_password/2, clear_session_password/1, get_protection/1, list_blocks/1, list_blocks_of_type/3]).
+-export([
+   set_session_password/2,
+   clear_session_password/1,
+   get_protection/1,
+   list_blocks/1,
+   list_blocks_of_type/3]).
 
 %% misc
--export([get_exec_time/1, get_last_error/1, get_pdu_length/1]).
+-export([
+   get_exec_time/1,
+   get_last_error/1,
+   get_pdu_length/1,
+   get_connected/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -85,7 +94,9 @@
    rack = nil,
    slot = nil,
    state =  nil,
-   is_active = false
+   is_active = false,
+   reconnector,
+   owner
 }).
 
 -type connect_opt() ::
@@ -106,6 +117,10 @@
 
 -type data_io_map() :: #{}.
 
+-define(RECON_MIN_INTERVAL, 100).
+-define(RECON_MAX_INTERVAL, 6000).
+-define(RECON_MAX_RETRIES, infinity).
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -119,6 +134,10 @@
 -spec start(Opts :: list()) -> {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
 start(Opts) ->
    gen_server:start(?MODULE, Opts, []).
+%% @doc start the server and let the server handle connection and reconnection
+start_connect(Opts) when is_map(Opts) ->
+   gen_server:start(?MODULE, Opts#{owner => self(), handle_connect => true}, []).
+
 -spec(start_link(Opts :: list()) ->
    {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
 start_link(Opts) ->
@@ -618,7 +637,12 @@ get_last_error(Pid) ->
 get_pdu_length(Pid) ->
    gen_server:call(Pid, get_pdu_length).
 
-
+%%% @doc
+%%% Returns the connection status.
+%%%
+-spec get_connected(gen_server:server()) -> {ok, true|false} | {error, map()} | {error, einval}.
+get_connected(Pid) ->
+   gen_server:call(Pid, get_connected).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -640,7 +664,19 @@ get_pdu_length(Pid) ->
    {stop, Reason :: term()} | ignore).
 init([]) ->
    Port = port_open(),
-   {ok, #state{port = Port}}.
+   {ok, #state{port = Port}};
+init(#{owner := Owner, handle_connect := true, ip := Ip, rack := Rack, slot := Slot} = _Opts) ->
+   {ok, State} = init([]),
+   Recon = recon:new(
+      {?RECON_MIN_INTERVAL, ?RECON_MAX_INTERVAL, ?RECON_MAX_RETRIES}),
+   erlang:send_after(0, self(), reconnect),
+   {ok, State#state{
+      ip = Ip,
+      rack = Rack,
+      slot = Slot,
+      reconnector = Recon,
+      owner = Owner
+   }}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -652,26 +688,12 @@ init([]) ->
 
 
 
-handle_call({connect_to, Opts}, {FromPid, _}, State) ->
+handle_call({connect_to, Opts}, {_FromPid, _}, State) ->
    Ip = proplists:get_value(ip, Opts),
    Rack = proplists:get_value(rack, Opts, 0),
    Slot = proplists:get_value(slot, Opts, 0),
    Active = proplists:get_value(active, Opts, false),
-
-   Response =
-      case is_binary(Ip) of
-         true -> call_port(State, connect_to, {Ip, Rack, Slot});
-         false -> {error, ip_must_be_a_binary}
-      end,
-
-   NewState = case Response of
-                 ok -> State#state{
-                    state = connected, ip = Ip,
-                    rack = Rack, slot = Slot,
-                    is_active = Active, controlling_process = FromPid};
-                 {error, _W} -> State#state{state = idle}
-              end,
-
+   {Response, NewState} = do_connect(Ip, Rack, Slot, Active, State),
    {reply, Response, NewState};
 
 handle_call({set_connection_type, ConnType}, _From, State) ->
@@ -806,6 +828,11 @@ handle_call(get_pdu_length, _From, State) ->
    end,
    {reply, Response, State};
 
+handle_call(get_connected, _From, State) ->
+   %% note that this function can not tell, if connection is lost, still wil return true
+   Response = call_port(State, get_connected, nil),
+   {reply, Response, State};
+
 %%%
 %% some are missing
 %%%%
@@ -871,6 +898,16 @@ handle_info({Port,{exit_status, Status}}, State=#state{port = Port}) ->
 handle_info({'EXIT', Port, PosixCode}, State) ->
    logger:warning("Port: ~p exited with Code: ~p", [Port, PosixCode]),
    {stop, port_exited, State};
+handle_info(reconnect,
+    State=#state{ip = Ip, port = Port, rack = Rack, slot = Slot, owner = Owner}) ->
+   case do_connect(Ip, Rack, Slot, true, State) of
+      {ok, NewState} ->
+         Owner ! {snap7_connected, self()},
+         {noreply, NewState};
+      {{error, Error}, NewState} ->
+         logger:error("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port},Error]),
+         try_reconnect(NewState)
+   end;
 handle_info(_Info, State) ->
    {noreply, State}.
 
@@ -908,6 +945,30 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+try_reconnect(State=#state{reconnector = Reconnector}) ->
+   case recon:execute(Reconnector, reconnect) of
+      {ok, Reconnector1} ->
+         {noreply, State#state{reconnector = Reconnector1}};
+      {stop, Error} -> logger:error("[Client: ~p] PLC reconnect error: ~p!",[?MODULE, Error]),
+         {stop, {shutdown, Error}, State}
+   end.
+
+do_connect(Ip, Rack, Slot, Active, State) ->
+   Response =
+      case is_binary(Ip) of
+         true -> call_port(State, connect_to, {Ip, Rack, Slot});
+         false -> {error, ip_must_be_a_binary}
+      end,
+
+   NewState = case Response of
+                 ok -> State#state{
+                    state = connected, ip = Ip,
+                    rack = Rack, slot = Slot,
+                    is_active = Active};
+                 {error, _W} -> State#state{state = idle}
+              end,
+   {Response, NewState}.
+
 port_open() ->
    Snap7Dir = code:priv_dir(snap7erl),
    os:putenv("LD_LIBRARY_PATH", Snap7Dir),
@@ -921,7 +982,7 @@ port_open() ->
       binary,
       exit_status
    ]),
-   logger:warning("Port is : ~p",[is_port(Port)]),
+%%   logger:warning("Port is : ~p",[is_port(Port)]),
    Port.
 
 call_simple(State, Command) ->
@@ -932,26 +993,28 @@ call_port(State, Command, Args) ->
 call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
    Msg = {Command, Args},
 %%   ok = send_data(Port, {command, erlang:term_to_binary(Msg)}),
-   erlang:send(Port, {self(), {command, erlang:term_to_binary(Msg)}}),
+   Port ! {self(), {command, erlang:term_to_binary(Msg)}},
+%%   erlang:send(Port, {self(), {command, erlang:term_to_binary(Msg)}}),
    % Block until the response comes back since the C side
    % doesn't want to handle any queuing of requests. REVISIT
+   Res =
    receive
-      {_, {data, <<114, Response/binary>>}} -> binary_to_term(Response)
+      {_, {data, <<114, Response/binary>>}} -> binary_to_term(Response);
+      {_, {exit_status, _Status}} -> exit(port_exit);
+      What -> logger:warning("received : ~p",[What])
+   %% {error,#{eiso => errIsoSendPacket,es7 => nil,etcp => 32}}
    after
       Timeout ->
+         logger:warning("port call timeout"),
          % Not sure how this can be recovered
          exit(port_timed_out)
+   end,
+   case Res of
+      {error,#{eiso := errIsoSendPacket}} ->
+         %% probably lost connection to plc meanwhile, so exit I guess
+         exit(errIsoSendPacket);
+      _ -> Res
    end.
-
-%%-spec send_data(Port::port(), Data::binary()) -> ok | error.
-%%send_data(Port, Data) when is_port(Port) ->
-%%   try port_command(Port, Data) of
-%%      true ->
-%%         ok
-%%   catch
-%%      error:badarg ->
-%%         error
-%%   end.
 
 
 key2value(Opts) ->
