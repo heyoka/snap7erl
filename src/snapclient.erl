@@ -1010,8 +1010,9 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
          exit(port_timed_out)
    end,
    case Res of
-      {error,#{eiso := errIsoSendPacket}} ->
+      {error,#{eiso := E}} when E == errIsoRecvPacket; E == errIsoSendPacket ->
          %% probably lost connection to plc meanwhile, so exit I guess
+         %% must exit here, no way of doing reconnect at this stage
          exit(errIsoSendPacket);
       _ -> Res
    end.

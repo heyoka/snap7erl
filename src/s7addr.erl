@@ -11,6 +11,8 @@
 %%%
 %%% no peripheral addresses supported, no string addresses supported!
 %%%
+%%% offset is a integer offset for the start-addresses
+%%%
 %%% @todo handle string type
 %%% @end
 %%% Created : 15. Jun 2019 20:05
@@ -19,78 +21,79 @@
 -author("heyoka").
 
 %% API
--export([parse/1, parse/2]).
+-export([parse/1, parse/2, parse/3]).
 
--spec parse(binary(), return_list) -> list().
-parse(Address, return_list) when is_binary(Address) ->
-   maps:to_list(parse(Address)).
-
--spec parse(binary()) -> map().
+parse(Address, Offset, return_list) when is_binary(Address), is_integer(Offset) ->
+   maps:to_list(parse(Address, Offset)).
 parse(Address) when is_binary(Address) ->
+   parse(Address, 0).
+parse(Address, return_list) when is_binary(Address) ->
+   parse(Address, return_list);
+parse(Address, Offset) when is_binary(Address), is_integer(Offset) ->
    Addr = string:uppercase(Address),
    %% trim whitespace
    Clean = binary:replace(Addr, <<" ">>, <<>>, [global]),
    %% check for addressing format // "DB" starts at index 0
    case string:find(Clean, <<"DB">>) of
       Clean ->
-            Pattern =
+         Pattern =
             case string:find(Clean, <<",">>) of
                nomatch  -> <<".">>;
                _        -> <<",">>
             end,
-            do_parse(binary:split(Clean, Pattern, [trim_all]));
+         do_parse(binary:split(Clean, Pattern, [trim_all]), Offset);
 
-      _ ->  do_parse(Clean)
+      _ ->  do_parse(Clean, Offset)
    end.
 
 %% non db address
-do_parse([<<First/binary>>]) ->
+do_parse([<<First/binary>>], Offset) ->
    Parts = binary:split(First, <<".">>, [trim_all]),
-   parse_non_db(Parts, #{amount => 1});
+   parse_non_db(Parts, #{amount => 1}, Offset);
 %% db address step7 style
-do_parse([<<"DB", _DbNumber/binary>> = First, <<"DB", Part2/binary>>]) ->
-   do_parse([First, Part2]);
+do_parse([<<"DB", _DbNumber/binary>> = First, <<"DB", Part2/binary>>], Offset) ->
+   do_parse([First, Part2], Offset);
 %% db address node-red style
-do_parse([<<"DB", DbNumber/binary>>, Part2]) ->
+do_parse([<<"DB", DbNumber/binary>>, Part2], Offset) ->
    P = #{area => db, amount => 1, db_number => binary_to_integer(DbNumber)},
    Parts = binary:split(Part2, <<".">>, [trim_all]),
-   parse_db(Parts, P);
+   parse_db(Parts, P, Offset);
 
 
-do_parse(_) -> invalid.
+do_parse(_, _) -> invalid.
 
 %% second part after comma !
-parse_db([NoBitAccess], Params) ->
+parse_db([NoBitAccess], Params, Offset) ->
    DataType = clear_numbers(NoBitAccess),
    Size = byte_size(DataType),
    <<DataType:Size/binary, StartAddr/binary>> = NoBitAccess,
    {DType, CDType} = data_type(DataType),
-   Params#{word_len => DType, start => binary_to_integer(StartAddr), dtype => CDType};
-parse_db([BitAccess, Bit], Params) ->
+   Params#{word_len => DType, start => binary_to_integer(StartAddr)+Offset, dtype => CDType};
+parse_db([BitAccess, Bit], Params, Offset) ->
    DataType = clear_numbers(BitAccess),
    Size = byte_size(DataType),
    <<DataType:Size/binary, StartAddr/binary>> = BitAccess,
    {DType,CDType} = data_type(DataType),
-   {Start, Amount} = start_amount(DType, StartAddr, Bit),
+   {Start, Amount} = start_amount(DType, binary_to_integer(StartAddr)+Offset, Bit),
    Params#{start => Start, amount => Amount, word_len => DType, dtype => CDType}.
 
 
 %% @doc
 %% non db
 %%
-parse_non_db([NoBitAccess], Par) ->
+parse_non_db([NoBitAccess], Par, Offset) ->
    % clear numbers to get the area
    Area = clear_numbers(NoBitAccess),
    Size = byte_size(Area),
    <<Area:Size/binary, StartAddr/binary>> = NoBitAccess,
-   P = type(Area, Par#{start => binary_to_integer(StartAddr)}),
+   P = type(Area, Par#{start => binary_to_integer(StartAddr)+Offset}),
    {P, NoBitAccess};
-parse_non_db([WithBitAccess, Bit], Par) ->
+parse_non_db([WithBitAccess, Bit], Par, Offset) ->
    Area = clear_numbers(WithBitAccess),
    Size = byte_size(Area),
    <<Area:Size/binary, StartAddr/binary>> = WithBitAccess,
    P = type(Area, Par#{}),
-   {Start, Amount} = start_amount(maps:get(word_len, P), StartAddr, Bit),
+   {Start, Amount} = start_amount(maps:get(word_len, P), binary_to_integer(StartAddr)+Offset, Bit),
    {P#{start => Start, amount => Amount}, WithBitAccess, Bit}.
 
 clear_numbers(Bin) ->
@@ -232,6 +235,26 @@ data_type(<<"STRING">>) -> {byte, string}.
 %%%%%
 start_amount(WordType, StartMarker, BitMarker) ->
    case WordType of
-      bit   -> {binary_to_integer(StartMarker)*8 + binary_to_integer(BitMarker), 1};
-      _     -> {binary_to_integer(StartMarker), binary_to_integer(BitMarker)}
+      bit   -> {StartMarker * 8 + binary_to_integer(BitMarker), 1};
+      _     -> {StartMarker, binary_to_integer(BitMarker)}
    end.
+
+
+-ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+basic_test() ->
+   A = <<"DB34.DBX32.4">>,
+   Res = #{amount => 1, area => db, db_number => 34, dtype => bool, start => 260, word_len => bit},
+   ?assertEqual(Res, parse(A)).
+basic_bool_offset_test() ->
+   A = <<"DB34.DBX32.4">>,
+   Offset = 30,
+   Res = #{amount => 1, area => db, db_number => 34, dtype => bool, start => 500, word_len => bit},
+   ?assertEqual(Res, parse(A, Offset)).
+basic_real_offset_test() ->
+   A = <<"DB34.DBR14">>,
+   Offset = 30,
+   Res = #{amount => 1, area => db, db_number => 34, dtype => float, start => 44, word_len => real},
+   ?assertEqual(Res, parse(A, Offset)).
+-endif.
