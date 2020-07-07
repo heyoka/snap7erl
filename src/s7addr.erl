@@ -12,8 +12,8 @@
 %%% no peripheral addresses supported, no string addresses supported!
 %%%
 %%% offset is a integer offset for the start-addresses
+%%% DB addresses only at the moment
 %%%
-%%% @todo handle string type
 %%% @end
 %%% Created : 15. Jun 2019 20:05
 %%%-------------------------------------------------------------------
@@ -47,6 +47,7 @@ parse(Address, Offset) when is_binary(Address), is_integer(Offset) ->
    end.
 
 %% non db address
+-spec do_parse(list(binary()), map()) -> map() | {error, invalid}.
 do_parse([<<First/binary>>], Offset) ->
    Parts = binary:split(First, <<".">>, [trim_all]),
    parse_non_db(Parts, #{amount => 1}, Offset);
@@ -58,25 +59,36 @@ do_parse([<<"DB", DbNumber/binary>>, Part2], Offset) ->
    P = #{area => db, amount => 1, db_number => binary_to_integer(DbNumber)},
    Parts = binary:split(Part2, <<".">>, [trim_all]),
    parse_db(Parts, P, Offset);
-
-
-do_parse(_, _) -> invalid.
+do_parse(_, _) -> {error, invalid}.
 
 %% second part after comma !
 parse_db([NoBitAccess], Params, Offset) ->
    DataType = clear_numbers(NoBitAccess),
-   Size = byte_size(DataType),
-   <<DataType:Size/binary, StartAddr/binary>> = NoBitAccess,
-   {DType, CDType} = data_type(DataType),
-   Params#{word_len => DType, start => binary_to_integer(StartAddr)+Offset, dtype => CDType};
+   case DataType of
+      _ when DataType == <<"X">> orelse DataType == <<"S">> ->
+         {error, invalid};
+      _ ->
+         Size = byte_size(DataType),
+         <<DataType:Size/binary, StartAddr/binary>> = NoBitAccess,
+         case (catch binary_to_integer(StartAddr)) of
+            Start when is_integer(Start) ->
+               {DType, CDType} = data_type(DataType),
+               Params#{word_len => DType, start => Start + Offset, dtype => CDType};
+            _ -> {error, invalid}
+         end
+   end;
 parse_db([BitAccess, Bit], Params, Offset) ->
    DataType = clear_numbers(BitAccess),
-   Size = byte_size(DataType),
-   <<DataType:Size/binary, StartAddr/binary>> = BitAccess,
-   {DType,CDType} = data_type(DataType),
-   {Start, Amount} = start_amount(DType, binary_to_integer(StartAddr)+Offset, Bit),
-   Params#{start => Start, amount => Amount, word_len => DType, dtype => CDType}.
-
+   case DataType of
+      _ when DataType == <<"X">> orelse DataType == <<"S">> ->
+%%         logger:notice("BitAccess: ~p, Bit: ~p, Params: ~p :: ~nDataType: ~p",[BitAccess, Bit, Params, DataType]),
+         Size = byte_size(DataType),
+         <<DataType:Size/binary, StartAddr/binary>> = BitAccess,
+         {DType,CDType} = data_type(DataType),
+         {Start, Amount} = start_amount(DType, binary_to_integer(StartAddr)+Offset, Bit),
+         Params#{start => Start, amount => Amount, word_len => DType, dtype => CDType};
+      _ -> {error, invalid}
+   end.
 
 %% @doc
 %% non db
@@ -86,15 +98,23 @@ parse_non_db([NoBitAccess], Par, Offset) ->
    Area = clear_numbers(NoBitAccess),
    Size = byte_size(Area),
    <<Area:Size/binary, StartAddr/binary>> = NoBitAccess,
-   P = type(Area, Par#{start => binary_to_integer(StartAddr)+Offset}),
-   {P, NoBitAccess};
+%%   P = type(Area, Par#{start => binary_to_integer(StartAddr)+Offset}),
+   P = type(Area, Par#{}),
+   case P of
+      _ when is_map(P) -> {P#{start => binary_to_integer(StartAddr)+Offset}, NoBitAccess};
+      _ -> P
+   end;
 parse_non_db([WithBitAccess, Bit], Par, Offset) ->
    Area = clear_numbers(WithBitAccess),
    Size = byte_size(Area),
    <<Area:Size/binary, StartAddr/binary>> = WithBitAccess,
    P = type(Area, Par#{}),
-   {Start, Amount} = start_amount(maps:get(word_len, P), binary_to_integer(StartAddr)+Offset, Bit),
-   {P#{start => Start, amount => Amount}, WithBitAccess, Bit}.
+   case P of
+      _ when is_map(P) ->
+         {Start, Amount} = start_amount(maps:get(word_len, P), binary_to_integer(StartAddr)+Offset, Bit),
+         {P#{start => Start, amount => Amount}, WithBitAccess, Bit};
+      {error, invalid} -> {error, invalid}
+   end.
 
 clear_numbers(Bin) ->
    re:replace(Bin, "[0-9]", <<>>, [{return, binary}, global]).
@@ -196,8 +216,9 @@ type(<<"MR">>, P) ->
 type(<<"T">>, P) ->
    P#{area => tm, word_len => timer, dtype => timer};
 type(<<"C">>, P) ->
-   P#{area => ct, word_len => counter, dtype => counter}.
+   P#{area => ct, word_len => counter, dtype => counter};
 
+type(_, _) -> {error, invalid}.
 
 %% dtype for db
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -257,4 +278,18 @@ basic_real_offset_test() ->
    Offset = 30,
    Res = #{amount => 1, area => db, db_number => 34, dtype => float, start => 44, word_len => real},
    ?assertEqual(Res, parse(A, Offset)).
+%%basic_nondb_test() ->
+%%   A = <<"QM3.2">>,
+%%   Res = #{amount => 1, area => db, db_number => 34, dtype => bool, start => 26, word_len => bit},
+%%   ?assertEqual(Res, parse(A)).
+basic_invalid_test() ->
+   A = <<"DB34.DBR14.0">>,
+   ?assertEqual({error, invalid}, parse(A)).
+basic_bool_invalid_test() ->
+   A = <<"DB34.DBX3">>,
+   ?assertEqual({error, invalid}, parse(A)).
+basic_invalid_2_test() ->
+   A = <<"DB34.DBW">>,
+   ?assertEqual({error, invalid}, parse(A)).
+
 -endif.
