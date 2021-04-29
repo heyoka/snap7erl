@@ -954,6 +954,7 @@ try_reconnect(State=#state{reconnector = Reconnector}) ->
    end.
 
 do_connect(Ip, Rack, Slot, Active, State) ->
+   logger:info("connect to S7 ~p",[Ip]),
    Response =
       case is_binary(Ip) of
          true -> call_port(State, connect_to, {Ip, Rack, Slot});
@@ -965,7 +966,9 @@ do_connect(Ip, Rack, Slot, Active, State) ->
                     state = connected, ip = Ip,
                     rack = Rack, slot = Slot,
                     is_active = Active};
-                 {error, _W} -> State#state{state = idle}
+                 {error, _W} ->
+                    logger:error("error connecting to S7 (Ip), ~p",[Ip, _W]),
+                    State#state{state = idle}
               end,
    {Response, NewState}.
 
@@ -1014,6 +1017,7 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
          %% probably lost connection to plc meanwhile, so exit I guess
          %% must exit here, no way of doing reconnect at this stage
          exit(errIsoSendPacket);
+      {error,#{}} = Err -> logger:warning("error calling s7 (~p): ~p",[Msg, Err]), Err;
       _ -> Res
    end.
 
