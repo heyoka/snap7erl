@@ -905,7 +905,7 @@ handle_info(reconnect,
          Owner ! {snap7_connected, self()},
          {noreply, NewState};
       {{error, Error}, NewState} ->
-         logger:error("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port},Error]),
+         logger:error("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port}, Error]),
          try_reconnect(NewState)
    end;
 handle_info(_Info, State) ->
@@ -967,7 +967,7 @@ do_connect(Ip, Rack, Slot, Active, State) ->
                     rack = Rack, slot = Slot,
                     is_active = Active};
                  {error, _W} ->
-                    logger:error("error connecting to S7 (Ip), ~p",[Ip, _W]),
+                    logger:error("error connecting to S7 (~p), ~p",[Ip, _W]),
                     State#state{state = idle}
               end,
    {Response, NewState}.
@@ -1016,7 +1016,7 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
       {error,#{eiso := E}} when E == errIsoRecvPacket; E == errIsoSendPacket ->
          %% probably lost connection to plc meanwhile, so exit I guess
          %% must exit here, no way of doing reconnect at this stage
-         exit(errIsoSendPacket);
+         exit(E);
       {error,#{}} = Err -> logger:warning("error calling s7 (~p): ~p",[Msg, Err]), Err;
       _ -> Res
    end.
