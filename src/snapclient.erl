@@ -769,6 +769,7 @@ handle_call({db_read, Opts}, _From, State) ->
 handle_call({read_multi_vars, Opts}, _From, State) ->
    Data = lists:map(fun(Map) -> key2value(Map) end, Opts),
    Size = length(Data),
+%%   io:format("~nSIZE: ~p DATA: ~p~n",[Size, Data]),
    Response = call_port(State, read_multi_vars, {Size, Data}),
    {reply, Response, State};
 
@@ -984,6 +985,8 @@ port_open() ->
       use_stdio,
       binary,
       exit_status
+%%      ,
+%%      {parallelism, true}
    ]),
 %%   logger:warning("Port is : ~p",[is_port(Port)]),
    Port.

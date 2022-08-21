@@ -5,9 +5,13 @@
   {mod, {snap7erl_app, []}},
   {applications,
    [kernel,
-    stdlib
+    stdlib,
+    lager
    ]},
-  {env,[]},
+  {env,[{lager, [
+   {colored, true},
+   {error_logger_redirect, true}
+  ]}]},
   {modules, []},
 
   {licenses, ["Apache 2.0"]},
