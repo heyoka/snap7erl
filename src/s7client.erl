@@ -208,12 +208,20 @@ connected_iso(info, What, State) ->
   handle_common(info, What, State).
 
 %% ready to receive read requests
-ready(info, {tcp, Socket, Data}, State=#state{recipient = _Rec}) ->
+ready(info, {tcp, Socket, Data}, _State=#state{recipient = Rec}) ->
+  inet:setopts(Socket, [{active, once}]),
+  lager:notice("ready got tcp data: ~p",[Data]),
+  case handle_read_response(Data) of
+    {ok, ResultList} -> Rec ! {s7_data, ResultList};
+    {error, What} -> Rec ! {s7_read_error, What}
+  end,
   keep_state_and_data;
 %%%%%%%%%%%% read %%%%%%%%%%%%%
-ready({call, From}, {read, Function, Start, Offset, Opts}, State) ->
-%%  NewState = next_tid(State),
-  keep_state_and_data;
+ready({call, From}, {read, VarList}, State) ->
+  NewState =  next_refid(State),
+  Res = read_multiple(VarList, NewState),
+  lager:info("result from sending: ~p",[Res]),
+  {keep_state, NewState, [{reply, From, ok}]};
 ready(info, What, State) ->
   handle_common(info, What, State).
 
@@ -345,7 +353,7 @@ connect_iso(_State = #state{socket = Sock, rack = Rack, slot = Slot}) ->
 
 %%  Msg.
 
-negotiate_pdu(State = #state{socket = Sock}) ->
+negotiate_pdu(_State = #state{socket = Sock}) ->
   Msg =
   <<
     %% TPKT header
@@ -404,30 +412,23 @@ handle_neg_pdu_response(_Other) ->
   {error, unexpected_pdu}.
 
 
-read_multiple(Vars, State) when is_list(Vars) ->
-  TptkLength = 0,
+read_multiple(Vars, State=#state{socket = Sock}) when is_list(Vars) ->
 
-  NewState =  next_refid(State),
   RefId = State#state.ref_id,
-
-  Area = db,
-  AreaType = proplists:get_value(Area, ?S7PDU_AREA),
-  DbNumber = 2,
-  Amount = 1,
-  WordLen = byte,
-  VarType = proplists:get_value(WordLen, ?S7PDU_TRANSPORT_TYPE),
-  Start = 4,
   ItemCount = length(Vars),
 
-  DataLength = 0, %% calculate
-
+  ReadItems = encode_read_items(Vars, <<>>),
+  ReadItemsSize = byte_size(ReadItems),
+  ParamLength = ReadItemsSize + 2,
+  DataLength = 0, % returns byte_size(ReadItems) + 4,
+  TptkLength = ReadItemsSize + 19,
 
   Msg =
     <<
       %% TPKT header
       3, %% version
       0, %% reserved
-      TptkLength:16, %% length DataLength + 31 byte
+      TptkLength:16, %% length of the whole thing
 
       %% TPDU
       2, %% length
@@ -440,43 +441,81 @@ read_multiple(Vars, State) when is_list(Vars) ->
       ?S7PDU_ROSCTR_JOB, %% ROSCTR: 1 job
       0:16, %% redundancy identification
       RefId:16, %% pdu reference
-      14:16, %% parameter length
+      ParamLength:16, %% parameter length
       DataLength:16, %% (Data length = Size(bytes) + 4)
 
-      %% item
+      %% item read function
       ?S7PDU_FUNCTION_READ_VAR, %% function code
       ItemCount, %% item_count
 
-      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-      %% repeat for every var
-      16#12, %% var spec, always 16#12
-      10, % length of remaining bytes
-      16#10, % syntax ID (S7ANY)
-      VarType, % transport size BYTE ->
-      Amount:16, % read length/amount
-      DbNumber:16, %% DB number
-      AreaType, %% area Type (DB storage area, in this case)
-      Start:24 %% area offset
+      %% items
+      ReadItems/binary
+    >>,
+  lager:notice("send read multivar request ~p bytes",[byte_size(Msg)]),
+  Res = gen_tcp:send(Sock, Msg),
+  lager:notice("ret from gen_tcp:send: ~p",[Res]),
+  Res.
 
-  >>.
 
-%%connect_cotp_resp(
-%%    <<
-%%      ?TPKT_HEADER/binary,
-%%
-%%      ?COTP_CONNECT_LENGTH,
-%%      ?COTP_HEADER_PDU_TYPE_CONN_CONFIRM,
-%%      _DestinationRef:16,
-%%      _SourceRef:16,
-%%      _Class,
-%%      ?COTP_HEADER_PDU_PARAM_CODE_SRC_TSAP,
-%%      ParameterLength_tsap,
-%%      _Rack,
-%%      ?COTP_HEADER_PDU_PARAM_CODE_DEST_TSAP,
-%%      ParameterLength_tsap,
-%%      _Slot
-%%>>) ->
-%%  ok.
+
+encode_read_items([], Ret) ->
+  Ret;
+encode_read_items(
+    [#{amount := Amount, area := Area, word_len := WordLen, db_number := DB, start := Start}|Items], Acc) ->
+
+  AreaType = proplists:get_value(Area, ?S7PDU_AREA),
+  VarType = proplists:get_value(WordLen, ?S7PDU_TRANSPORT_TYPE),
+
+  Item =
+  <<
+  16#12, %% var spec, always 16#12
+  10, % length of remaining bytes
+  16#10, % syntax ID (S7ANY)
+  VarType, % transport size in BYTE
+  Amount:16, % read length/amount
+  DB:16, %% DB number
+  AreaType, %% area Type (DB storage area, in this case)
+  Start:24 %% area offset
+  >>,
+  encode_read_items(Items, <<Acc/binary, Item/binary>>)
+.
+
+%%<<3,0,0,29, 2,240,128, 50,3, 0,0, 0,2, 0,2 ,0,8 ,0,0, 4,1, 255,4,0,32, 38,56,4,180>>
+handle_read_response(<<
+  %% tpkt header
+  _:16, _TotalLength:16,
+  %% tpdu
+  2, ?COTP_HEADER_PDU_TYPE_DATA, 16#80,
+  %% S7
+  ?S7PDU_PROTOCOL_ID,
+  ?S7PDU_ROSCTR_ACK_DATA,
+  _RedIdent:16, _PDURef:16, _Length:16,
+  _DataLength:16,
+  ErrorClass, ErrorCode, %% byte 17, 18
+  ?S7PDU_FUNCTION_READ_VAR,
+  ItemCount,
+  Data/binary
+  >>) ->
+  lager:info("read ErrorClass: ~p, ErrorCode: ~p",[ErrorClass, ErrorCode]),
+  case ErrorClass /= 0 orelse ErrorCode /= 0 of
+    true -> {error, {ErrorClass, ErrorCode}};
+    false ->
+      lager:notice("reading returned ~p items ~p",[ItemCount, Data]),
+      {ok, decode_items(Data, [])}
+  end;
+handle_read_response(_Other) ->
+  {error, unexpected_pdu}.
+
+decode_items(<<>>, Ret) ->
+  Ret;
+decode_items(<<16#ff, _VarType, Count:16, Rest/binary>>, Acc) ->
+  Data = binary:part(Rest, 0, erlang:trunc(Count/8)),
+  <<_Data:Count, NextItem/binary>> = Rest,
+  decode_items(NextItem, Acc ++ [Data]);
+decode_items(<<ReturnCode, _VarType, Count:16, Rest/binary>>, Acc) ->
+  lager:warning("got return code ~p for read item",[ReturnCode]),
+  <<_Data:Count, NextItem/binary>> = Rest,
+  decode_items(NextItem, Acc).
 
 try_reconnect(Reason, State = #state{reconnector = undefined}) ->
   {stop, {shutdown, Reason}, State};

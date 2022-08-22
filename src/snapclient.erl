@@ -769,6 +769,7 @@ handle_call({db_read, Opts}, _From, State) ->
 handle_call({read_multi_vars, Opts}, _From, State) ->
    Data = lists:map(fun(Map) -> key2value(Map) end, Opts),
    Size = length(Data),
+   lager:notice("read_multi_vars: ~p",[Opts]),
 %%   io:format("~nSIZE: ~p DATA: ~p~n",[Size, Data]),
    Response = call_port(State, read_multi_vars, {Size, Data}),
    {reply, Response, State};
@@ -997,6 +998,7 @@ call_simple(State, Command) ->
 call_port(State, Command, Args) ->
    call_port(State, Command, Args, ?C_TIMEOUT).
 call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
+   lager:notice("calls port with: ~p",[{Command, Args}]),
    Msg = {Command, Args},
 %%   ok = send_data(Port, {command, erlang:term_to_binary(Msg)}),
    Port ! {self(), {command, erlang:term_to_binary(Msg)}},
