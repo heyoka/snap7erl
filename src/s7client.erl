@@ -55,12 +55,15 @@
   rack = 0              :: non_neg_integer(),
   slot = 1              :: non_neg_integer(),
   pdu_size = 240        :: non_neg_integer(),
+  max_parallel_jobs = 1 :: non_neg_integer(),
   socket                :: inet:socket(),
   reconnector           :: modbus_s7backoff:reconnector(),
   recipient             :: pid(),
   buffer  = <<>>        :: binary(),
   ref_id = 1            :: 1..16#ffff,
-  requests = []         :: list()
+  requests = []         :: list(),
+  requests_waiting = [] :: list()
+
 }).
 
 %%%===================================================================
@@ -91,7 +94,6 @@ start_link(Opts) when is_list(Opts) ->
 %%%===================================================================
 
 init([Recipient, Opts]) ->
-  logger:set_primary_config(level, info),
   Reconnector = s7backoff:new({500, 8000}),
   State = init_opt(Opts, #state{reconnector = Reconnector, recipient = Recipient}),
   {ok, connecting, State, [{state_timeout, 0, connect}]}.
@@ -147,22 +149,20 @@ callback_mode() ->
 %% start state functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-connecting(enter, _OldState, _Data) ->
-  keep_state_and_data;
 connecting(state_timeout, connect, State) ->
   lager:info("[~p] connecting ...~n",[?MODULE]),
   connect(State);
 connecting(cast, stop, _State) ->
   {stop, normal}.
 
-disconnected(enter, _OldState, _Data) ->
-  keep_state_and_data;
 disconnected(info, {reconnect, timeout}, State) ->
   connect(State);
 disconnected({call, From}, _Whatever, _State) ->
   {keep_state_and_data, [{reply, From, {error, disconnected}}]};
 disconnected(cast, stop, _State) ->
   {stop, normal};
+disconnected({call, _From} = Req, What, State) ->
+  handle_common(Req, What, State);
 disconnected(_, _, _State) ->
   keep_state_and_data.
 
@@ -184,8 +184,8 @@ connected(info, {tcp, Socket, Data}, State=#state{recipient = _Rec}) ->
       lager:warning("waiting for connect confirm for iso, got other data"),
       try_reconnect(connect_iso_failed, State#state{socket = undefined})
   end;
-connected(info, What, State) ->
-  handle_common(info, What, State).
+connected(Type, What, State) ->
+  handle_common(Type, What, State).
 
 connected_iso(state_timeout, negotiate_pdu, State = #state{socket = Socket}) ->
   inet:setopts(Socket, [{active, once}]),
@@ -195,17 +195,19 @@ connected_iso(info, {tcp, Socket, Data}, State=#state{recipient = Rec}) ->
   inet:setopts(Socket, [{active, once}]),
   lager:notice("connected_iso got tcp data: ~p",[Data]),
   case handle_neg_pdu_response(Data) of
-    {ok, NewPDUSize} ->
-      lager:alert("got confirm for negotiate_pdu, pdu size now ~p, now ready for read requests",[NewPDUSize]),
+    {ok, NewPDUSize, MaxParallelJobs} ->
+      lager:alert("got confirm for negotiate_pdu, pdu size now ~p, max amqp is  ~p, now ready for read requests",
+        [NewPDUSize, MaxParallelJobs]),
       %% tell recipient we are connected
       Rec ! {s7, self(), {connected, NewPDUSize}},
-      {next_state, ready, State#state{pdu_size = NewPDUSize}};
+      %% here we should do all the waiting requests
+      {next_state, ready, State#state{pdu_size = NewPDUSize, max_parallel_jobs = MaxParallelJobs}};
     {error, What} ->
       lager:warning("waiting for confirm for negotiate_pdu, got error: ~p",[What]),
       try_reconnect(negotiate_pdu_failed, State#state{socket = undefined})
   end;
-connected_iso(info, What, State) ->
-  handle_common(info, What, State).
+connected_iso(Type, What, State) ->
+  handle_common(Type, What, State).
 
 %% ready to receive read requests
 ready(info, {tcp, Socket, Data}, _State=#state{recipient = Rec}) ->
@@ -222,12 +224,36 @@ ready({call, From}, {read, VarList}, State) ->
   Res = read_multiple(VarList, NewState),
   lager:info("result from sending: ~p",[Res]),
   {keep_state, NewState, [{reply, From, ok}]};
+ready({call, From}, get_cpu_info, State) ->
+  NewState =  next_refid(State),
+  Res = get_cpu_info(State),
+  lager:info("result from sending: ~p",[Res]),
+  {keep_state, NewState, [{reply, From, ok}]};
+ready({call, From}, get_cp_info, State) ->
+  NewState =  next_refid(State),
+  Res = get_cp_info(State),
+  lager:info("result from sending: ~p",[Res]),
+  {keep_state, NewState, [{reply, From, ok}]};
+ready({call, From}, get_plc_status, State) ->
+  NewState =  next_refid(State),
+  Res = get_plc_status(State),
+  lager:info("result from sending: ~p",[Res]),
+  {keep_state, NewState, [{reply, From, ok}]};
+ready({call, From}, get_plc_datetime, State) ->
+  NewState =  next_refid(State),
+  Res = get_plc_datetime(State),
+  lager:info("result from sending: ~p",[Res]),
+  {keep_state, NewState, [{reply, From, ok}]};
 ready(info, What, State) ->
   handle_common(info, What, State).
 
 
 
 %% common handlers, different states
+handle_common({call, From}, Req, State = #state{requests_waiting = ReqWaiting}) ->
+  NewState0 = #state{ref_id = RefId} = next_refid(State),
+  NewState = NewState0#state{requests_waiting = ReqWaiting ++ [{RefId, From, Req}]},
+  {keep_state, NewState, [reply, From, {ok, RefId}]};
 handle_common(info, {tcp_closed, _Socket}, State = #state{recipient = Rec}) ->
   lager:warning("got tcp closed, when connected"),
   Rec ! {s7, self(), disconnected},
@@ -242,6 +268,28 @@ handle_common(info, stop, _State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% end state functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%request({read, RefId, VarList}, State) ->
+%%  NewState =  next_refid(State),
+%%  Res = read_multiple(VarList, NewState),
+%%  lager:info("result from sending: ~p",[Res]),
+%%  {Res, }
+%%  {keep_state, NewState, [{reply, From, ok}]};
+%%request({call, From}, get_cpu_info, State) ->
+%%  NewState =  next_refid(State),
+%%  Res = get_cpu_info(State),
+%%  lager:info("result from sending: ~p",[Res]),
+%%  {keep_state, NewState, [{reply, From, ok}]};
+%%request({call, From}, get_cp_info, State) ->
+%%  NewState =  next_refid(State),
+%%  Res = get_cp_info(State),
+%%  lager:info("result from sending: ~p",[Res]),
+%%  {keep_state, NewState, [{reply, From, ok}]};
+%%request({call, From}, get_plc_status, State) ->
+%%  NewState =  next_refid(State),
+%%  Res = get_plc_status(State),
+%%  lager:info("result from sending: ~p",[Res]),
+%%  {keep_state, NewState, [{reply, From, ok}]}.
+
 
 terminate(_Reason, _StateName, #state{socket = Sock, reconnector = Recon}) ->
   lager:notice("~p terminate", [?MODULE]),
@@ -264,32 +312,8 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-handle_buffer(<<>>, State = #state{buffer = <<>>}) ->
-  {ok, State};
-handle_buffer(Data, State = #state{buffer = StateBuffer}) ->
-  Buffer = <<StateBuffer/binary, Data/binary>>,
-  do_handle_buffer(Buffer, State).
-do_handle_buffer(<<TransId:16, _:16, Length:16, Data1:Length/binary, Buf1/binary>> = Buffer, State) ->
-  case Data1 of
-    <<UnitID, Func, Len, Params:Len/binary>> ->
-      State1 =
-        handle_reply_pdu(TransId, UnitID, Func, Params, State#state{buffer = Buf1}),
-      case State1 of
-        {ok, NewState} ->
-          handle_buffer(<<>>, NewState);
-        Other ->
-          lager:warning("[~p] State after buffer handler not ok",[Other]),
-          Other
-      end;
-    _ ->
-      lager:error("### ### data too short ~p~n", [Buffer]),
-      {error, data_too_short, State#state{buffer = <<>>}}
-  end;
-do_handle_buffer(Buffer, State) ->
-  lager:notice("### ### [~p]waiting for more data...~n",[?MODULE]),
-  {ok, State#state{buffer = Buffer}}.
 
-%% also do the COTP connect after tcp connect was successful
+%% tcp connect
 connect(State = #state{host = Host, port = Port}) ->
   case gen_tcp:connect(Host, Port, ?TCP_OPTS) of
     {ok, Socket} ->
@@ -308,7 +332,6 @@ connect_iso(_State = #state{socket = Sock, rack = Rack, slot = Slot}) ->
   ParameterLength_tsap = 16#02,
 
   RemoteTSAP = Rack * 32 + Slot,
-
 
   Msg = <<
     ?TPKT_HEADER/binary,
@@ -378,8 +401,8 @@ negotiate_pdu(_State = #state{socket = Sock}) ->
     %% parameter
     16#f0, %% function-code: setup communication
     0:8, %% reserved
-    8:16, %% max AmQ (parallel jobs with ACK) calling: 8
-    8:16, %% max AmQ (parallel jobs with ACK) called: 8
+    8:16, %% max AmQ caller (parallel jobs with ACK) calling: 8
+    8:16, %% max AmQ callee (parallel jobs with ACK) called: 8
     ?S7PDU_MAX_PDUSIZE:16 %% PDU length: 960
   >>,
   lager:notice("send iso negotiate PDU ~p bytes",[byte_size(Msg)]),
@@ -398,15 +421,23 @@ handle_neg_pdu_response(<<
   ?S7PDU_PROTOCOL_ID,
   ?S7PDU_ROSCTR_ACK_DATA,
   _RedIdent:16, _:16, _:16,
-  ErrorClass, ErrorCode, %% byte 17, 18
   _DataLength:16,
-  _Func, 0, _MAX_amq:16, _MAX_amq2:16,
+  ErrorClass, ErrorCode, %% byte 17, 18
+  _Func, 0,
+  MAX_amq_caller:16,
+  MAX_amq2_callee:16,
   PDUSize:16
   >>) ->
-  lager:info("neg_pdu ErrorClass: ~p, ErrorCode: ~p",[ErrorClass, ErrorCode]),
+  lager:info("neg_pdu:: max_amq_caller: ~p max_amq_callee: ~p / ErrorClass: ~p, ErrorCode: ~p",
+    [MAX_amq_caller, MAX_amq2_callee, ErrorClass, ErrorCode]),
   case ErrorClass /= 0 orelse ErrorCode /= 0 of
-    true -> {error, {ErrorClass, ErrorCode}};
-    false -> {ok, PDUSize}
+    true ->
+      {error, {
+        proplists:get_value(ErrorClass, ?ERROR_CLASSES, <<"unknown error class">>),
+        proplists:get_value(ErrorCode, ?ERROR_CODES, <<"unknown error code">>)
+        }
+      };
+    false -> {ok, PDUSize, MAX_amq_caller}
   end;
 handle_neg_pdu_response(_Other) ->
   {error, unexpected_pdu}.
@@ -498,7 +529,12 @@ handle_read_response(<<
   >>) ->
   lager:info("read ErrorClass: ~p, ErrorCode: ~p",[ErrorClass, ErrorCode]),
   case ErrorClass /= 0 orelse ErrorCode /= 0 of
-    true -> {error, {ErrorClass, ErrorCode}};
+    true ->
+      {error, {
+        proplists:get_value(?ERROR_CLASSES, ErrorClass, <<"unknown error class">>),
+        proplists:get_value(?ERROR_CODES, ErrorCode, <<"unknown error code">>)
+        }
+      };
     false ->
       lager:notice("reading returned ~p items ~p",[ItemCount, Data]),
       {ok, decode_items(Data, [])}
@@ -513,10 +549,69 @@ decode_items(<<16#ff, _VarType, Count:16, Rest/binary>>, Acc) ->
   <<_Data:Count, NextItem/binary>> = Rest,
   decode_items(NextItem, Acc ++ [Data]);
 decode_items(<<ReturnCode, _VarType, Count:16, Rest/binary>>, Acc) ->
-  lager:warning("got return code ~p for read item",[ReturnCode]),
+  lager:warning("got return code ~p for read item",
+    [ReturnCode, proplists:get_value(ReturnCode, ?DATA_ITEM_ERRORS, <<"unknown error">>)]),
   <<_Data:Count, NextItem/binary>> = Rest,
   decode_items(NextItem, Acc).
 
+get_plc_status(_State = #state{socket = Sock}) ->
+  Msg =
+  <<16#03, 16#00, 16#00, 16#21, 16#02, 16#f0, 16#80, 16#32, 16#07,
+    16#00, 16#00, 16#2c, 16#00, 16#00, 16#08, 16#00, 16#08, 16#00, 16#01, 16#12,
+    16#04, 16#11, 16#44, 16#01, 16#00, 16#ff, 16#09, 16#00, 16#04, 16#04, 16#24,
+    16#00, 16#00 >>,
+  lager:notice("send get plc status request ~p bytes",[byte_size(Msg)]),
+  Res = gen_tcp:send(Sock, Msg),
+  lager:notice("ret from gen_tcp:send: ~p",[Res]),
+  Res.
+
+
+get_cpu_info(State) ->
+  {error, not_implemented}.
+
+get_cp_info(State) ->
+  {error, not_implemented}.
+
+get_plc_datetime(_State = #state{socket = Sock}) ->
+  lager:notice("send get plc status request ~p bytes",[byte_size(?REQUEST_GET_DATETIME)]),
+  inet:setopts(Sock, [{active, false}]),
+  Res = gen_tcp:send(Sock, ?REQUEST_GET_DATETIME),
+  Out =
+  case Res of
+    ok ->
+      case gen_tcp:recv(Sock, 0, 4000) of
+        {ok, Data} -> lager:notice("got data datetime response: ~p",[Data]), decode_datetime_response(Data);
+        {error, What} -> lager:warning("error receiving from socket: ~p",[What]), {error, What}
+      end;
+    {error, What1} -> lager:warning("error sending datetime_request : ~p",[What1]), {error, What1}
+  end,
+  inet:setopts(Sock, [{active, false}]),
+  Out
+  .
+%% 300 : <<3,0,0,43,2,240,128,50,7,0,0,56,0,0,12,0,14,0,1,18,8,18,135,1,5,0,0,0,0,255,9,0,10,0,25,34,8,48,33,25,22,113,3>>
+%% 1500: <<3,0,0,33, 2,240,128, 50,7, 0,0, SeqNr:56, Lenghts:0,0, ErrorClass:12,ErrorCode: 0,4, 0,1,18,8,18,135,1,0,0,0,129,4,10,0,0,0>>
+%% 12 is also S5TIME datatype
+decode_datetime_response(Resp) ->
+  %% 27:16 => 0, 29:8 => 16#ff, datetime at 35:48
+  Dt = binary:part(Resp, 35, 6),
+  lager:notice("datetime of plc is :~p",[Dt]),
+  {ok, Dt};
+%%  case binary:part(Resp, 27, 2) of
+%%    0 ->
+%%      case binary:at(Resp, 29) of
+%%        16#ff ->
+%%          Dt = binary:part(Resp, 35, 6),
+%%          lager:notice("datetime of plc is :~p",[Dt]),
+%%          {ok, Dt};
+%%        _ -> {error, invalid_pdu}
+%%      end;
+%%    _ -> {error, invalid_pdu}
+%%  end;
+decode_datetime_response(_) ->
+  {error, unexpected_pdu}.
+
+
+%%%%%% internal %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 try_reconnect(Reason, State = #state{reconnector = undefined}) ->
   {stop, {shutdown, Reason}, State};
 try_reconnect(Reason, State = #state{reconnector = Reconnector}) ->
@@ -530,138 +625,9 @@ try_reconnect(Reason, State = #state{reconnector = Reconnector}) ->
 
 
 
-%%%%
-%% Opts :: opt_list() -> [{signed, true|false} | {output, int16|int32|float32|coils|acii|binary}].
-%%send_pdu(Request, Opts, State=#state{requests = Requests, tid = TId, socket = Sock}, From) ->
-%%  Message =  generate_request(Request),
-%%  case gen_tcp:send(Sock, Message) of
-%%    ok ->
-%%      Req = {TId, Request, Opts, From},
-%%      NewState = State#state{requests = [Req|Requests]},
-%%      {keep_state, NewState, [{reply, From, {ok, TId}}]};
-%%    {error, closed} ->
-%%      lager:error("~p error sending pdu for tid ~p closed~n",[self(), TId]),
-%%      gen_statem:reply(From, {error, disconnected}),
-%%      try_reconnect(closed, State);
-%%    {error, Reason} ->
-%%      lager:error("************** ~p error sending pdu for tid ~p ~p~n",[self(), TId, Reason]),
-%%      {keep_state, State, [{reply, From, {error, Reason}}]}
-%%  end.
-
-handle_reply_pdu(TransId, UnitID1, Func1, Pdu, State) ->
-  ok.
-%%  case lists:keytake(TransId, 1, State#state.requests) of
-%%    false ->
-%%      lager:warning("### ### [~p]transaction-id ~p not found~n", [?MODULE, TransId]),
-%%      {error, unknown_transaction_id, State#state{buffer = <<>>}};
-%%    {value, {_, _Request = #tcp_request{address = UnitId, function = Func, data = Offset, ts = _Ts}, Opts, {From, _}}, Reqs}
-%%      when UnitId =:= UnitID1; UnitId =:= 255 ->
-%%      case Pdu of
-%%        <<ErrorCode>> when  Func + 16#80 =:= Func1 ->
-%%          From ! {modbusdata, {error, TransId, err(ErrorCode)}},
-%%          {ok, State#state{requests = Reqs}};
-%%        Data when Func =:= Func1 ->
-%%          Data0 = output(Data, Opts, coils),
-%%          FinalData =
-%%            case (Func == ?FC_READ_COILS) andalso (length(Data0) > Offset) of
-%%              true ->
-%%                {ResultHead, _} = lists:split(Offset, Data0),
-%%                ResultHead;
-%%              false -> Data0
-%%            end,
-%%
-%%          From ! {modbusdata, {ok, TransId, FinalData}},
-%%          {ok, State#state{requests = Reqs}};
-%%        _ ->
-%%          lager:error("### ### unmatched response pdu ~p~n", [Pdu]),
-%%          From ! {modbusdata, {error, TransId, internal}},
-%%          {ok, State#state{requests = Reqs}}
-%%      end;
-%%    _ ->
-%%      lager:warning("### ### reply from other unit ~p~n", [Pdu]),
-%%      {error, unit_mismatch, State#state{buffer = <<>>}}
-%%  end.
-
-
 next_refid(State = #state{ref_id = Tid}) when Tid >= ?S7PDU_MAX_REF_ID ->
   State#state{ref_id = 1};
 next_refid(State = #state{ref_id = Tid}) ->
   State#state{ref_id = Tid+1}.
 
 
-%% read requests
-generate_request(#tcp_request{tid = Tid, address = Address, function = Code, start = Start, data = Data}) ->
-  Message = <<Address:8, Code:8, Start:16, Data:16>>,
-  Size = byte_size(Message),
-  <<Tid:16, 0:16, Size:16, Message/binary>>.
-
-
-%% @doc Function to validate the response header and get the data from the tcp socket.
-%% @end
--spec get_response(State::#tcp_request{}) -> ok | {error, term()}.
-get_response(Req = #tcp_request{}) ->
-  recv(Req).
-
-recv(Req) ->
-  case recv(header, Req) of
-    {ok, HeaderLength} ->
-      recv(payload, HeaderLength, Req);
-    {error,Error} ->
-      {error,Error}
-  end.
-
-recv(header, #tcp_request{tid = Tid, sock = Sock}) ->
-  case gen_tcp:recv(Sock, ?COTP_DATA_LENGTH, ?RECV_TIMEOUT) of
-    {ok, <<Tid:16, _:16, Len:16>>} ->
-      {ok, Len};
-    {ok, Header} ->
-      lager:error("Response cannot match request: request tid=~p, response header =~p", [Tid, Header]),
-      {error, badheader};
-    {error, Reason} ->
-      {error, Reason}
-  end.
-
-recv(payload, Len, #tcp_request{sock = Sock, function = Code, start = Start}) ->
-  BadCode = Code + 16#80,
-  case gen_tcp:recv(Sock, Len, ?RECV_TIMEOUT) of
-    {ok, <<_UnitId:8, BadCode:8, ErrorCode:8>>} -> {error, err(ErrorCode)};
-    {ok, <<_UnitId:8, Code:8, Start:16, Data:16>>} -> {ok, Data};
-    {ok, <<_UnitId:8, Code:8, Size, Payload:Size/binary>>} -> {ok, Payload};
-    {ok, <<_:8>>}      ->   {error, too_short_modbus_payload};
-    {error, Reason}    ->   {error, Reason}
-  end.
-
-
-%% @doc Function convert data to the selected output.
-%% @end
--spec output(Data::binary(), Opts::modbus:opt_list(), Default::atom()) -> list().
-%%output(Data, _Opts, _Default) ->
-%%   [X || <<X:16>> <= Data];
-output(Data, Opts, Default) ->
-  Output = proplists:get_value(output, Opts, Default),
-  Signed = proplists:get_value(signed, Opts, false),
-  case {Output, Signed} of
-%%    {int16, false} -> modbus_util:binary_to_int16(Data);
-%%    {int16, true} -> modbus_util:binary_to_int16s(Data);
-%%    {int32, false} -> modbus_util:binary_to_int32(Data);
-%%    {int32, true} -> modbus_util:binary_to_int32s(Data);
-%%    {float32, _} -> modbus_util:binary_to_float32(Data);
-%%    {float64, _} -> modbus_util:binary_to_float64(Data);
-%%    {double, _} -> modbus_util:binary_to_float64(Data);
-%%    {coils, _} -> modbus_util:binary_to_coils(Data);
-%%    {ascii, _} -> modbus_util:binary_to_ascii(Data);
-    {binary, _} -> Data;
-    _ -> Data
-  end.
-
-err(<<Code:8>>) -> err(Code);
-err(1)  -> illegal_function;
-err(2)  -> illegal_data_address;
-err(3)  -> illegal_data_value;
-err(4)  -> slave_device_failure;
-err(5)  -> acknowledge;
-err(6)  -> slave_device_busy;
-err(8)  -> memory_parity_error;
-err(10) -> gateway_path_unavailable;
-err(11) -> gateway_target_device_failed_to_respond;
-err(_)  -> unknown_response_code.
