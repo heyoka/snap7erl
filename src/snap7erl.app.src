@@ -8,10 +8,7 @@
     stdlib,
     lager
    ]},
-  {env,[{lager, [
-   {colored, true},
-   {error_logger_redirect, true}
-  ]}]},
+  {env,[{lager, [{colored, true}]}]},
   {modules, []},
 
   {licenses, ["Apache 2.0"]},

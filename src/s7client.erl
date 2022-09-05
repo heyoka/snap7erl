@@ -15,7 +15,7 @@
 
 -include("s7erl.hrl").
 %% API
--export([start_link/0, start_link/1, start/1, stop/1]).
+-export([start_link/0, start_link/1, start/1, stop/1, do/0]).
 
 %% gen_statem callbacks
 -export([
@@ -65,6 +65,42 @@
   requests_waiting = [] :: list()
 
 }).
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%
+%%%% TESTS
+%%%%%%%%%%%%%%%%%%%%%%%%
+do() ->
+  {ok, S7} = s7client:start_link([{host, "192.168.121.206"},{port, 102},{rack, 0}, {slot, 2}]),
+  receive
+    {s7_connected, S7, PDUSize} ->
+      lager:notice("S7 now connected, pdu-size is ~p, let's start reading ...",[PDUSize]),
+      gen_statem:call(S7, {read, [
+        #{amount => 2,area => db,db_number => 4002,start => 0,word_len => word},
+        #{amount => 3,area => db,db_number => 4002,start => 8,word_len => word}]}),
+      gen_statem:call(S7, {read, [
+        #{amount => 2,area => db,db_number => 4001,start => 0,word_len => word},
+        #{amount => 5,area => db,db_number => 4002,start => 8,word_len => word}]}),
+      gen_statem:call(S7, {read, [
+        #{amount => 2,area => db,db_number => 4002,start => 0,word_len => word},
+        #{amount => 3,area => db,db_number => 4002,start => 8,word_len => word}]}),
+      gen_statem:call(S7, {read, [
+        #{amount => 1,area => db,db_number => 4002,start => 0,word_len => word},
+        #{amount => 3,area => db,db_number => 4002,start => 0,word_len => word}]})
+  after 3000 ->
+    {error, timeout}
+  end
+  .
+
+
+
+
+
+
+
+
 
 %%%===================================================================
 %%% API
@@ -161,8 +197,8 @@ disconnected({call, From}, _Whatever, _State) ->
   {keep_state_and_data, [{reply, From, {error, disconnected}}]};
 disconnected(cast, stop, _State) ->
   {stop, normal};
-disconnected({call, _From} = Req, What, State) ->
-  handle_common(Req, What, State);
+%%disconnected({call, _From} = Req, What, State) ->
+%%  handle_common(Req, What, State);
 disconnected(_, _, _State) ->
   keep_state_and_data.
 
@@ -199,7 +235,7 @@ connected_iso(info, {tcp, Socket, Data}, State=#state{recipient = Rec}) ->
       lager:alert("got confirm for negotiate_pdu, pdu size now ~p, max amqp is  ~p, now ready for read requests",
         [NewPDUSize, MaxParallelJobs]),
       %% tell recipient we are connected
-      Rec ! {s7, self(), {connected, NewPDUSize}},
+      Rec ! {s7_connected, self(), NewPDUSize},
       %% here we should do all the waiting requests
       {next_state, ready, State#state{pdu_size = NewPDUSize, max_parallel_jobs = MaxParallelJobs}};
     {error, What} ->
@@ -210,20 +246,40 @@ connected_iso(Type, What, State) ->
   handle_common(Type, What, State).
 
 %% ready to receive read requests
-ready(info, {tcp, Socket, Data}, _State=#state{recipient = Rec}) ->
+ready(info, {tcp, Socket, Data}, State=#state{recipient = Rec, requests = CurrentRequests}) ->
   inet:setopts(Socket, [{active, once}]),
   lager:notice("ready got tcp data: ~p",[Data]),
+  NewState =
   case handle_read_response(Data) of
-    {ok, ResultList} -> Rec ! {s7_data, ResultList};
-    {error, What} -> Rec ! {s7_read_error, What}
+    {ok, PDURef, ResultList} ->
+      Rec ! {s7_data, PDURef, ResultList},
+      NewCurrentList = lists:keydelete(PDURef, 1, CurrentRequests),
+      State#state{requests = NewCurrentList};
+    {error, PDURef, Error} ->
+      Rec ! {s7_read_error, PDURef, Error},
+      NewCurrentList = lists:keydelete(PDURef, 1, CurrentRequests),
+      State#state{requests = NewCurrentList};
+  {error, What} ->
+    %% how to get rid of the accompaning entry in #state.requests ?
+    Rec ! {s7_read_error, What},
+    State
   end,
-  keep_state_and_data;
+  NewState1 = maybe_start_next(NewState),
+  {keep_state, NewState1};
 %%%%%%%%%%%% read %%%%%%%%%%%%%
-ready({call, From}, {read, VarList}, State) ->
-  NewState =  next_refid(State),
-  Res = read_multiple(VarList, NewState),
+ready({call, From}, {read, VarList}, State = #state{requests = CurrentRequests, max_parallel_jobs = Max})
+    when length(CurrentRequests) < Max ->
+  NewState = #state{ref_id = RefId} = next_refid(State),
+  Res = read_multiple(VarList, RefId, NewState),
   lager:info("result from sending: ~p",[Res]),
-  {keep_state, NewState, [{reply, From, ok}]};
+  NewRequests = CurrentRequests ++ [{RefId, From, VarList}],
+  lager:info("new current requests: ~p",[NewRequests]),
+  {keep_state, NewState#state{requests = NewRequests}, [{reply, From, {ok, RefId}}]};
+ready({call, From}, {read, VarList}, State = #state{requests_waiting = WaitingList}) ->
+  NewState0 = #state{ref_id = RefId} = next_refid(State),
+  lager:notice("Request has to wait ~p",[RefId]),
+  NewState = NewState0#state{requests_waiting = WaitingList ++ [{RefId, From, VarList}]},
+  {keep_state, NewState, [{reply, From, {ok, RefId}}]};
 ready({call, From}, get_cpu_info, State) ->
   NewState =  next_refid(State),
   Res = get_cpu_info(State),
@@ -253,7 +309,7 @@ ready(info, What, State) ->
 handle_common({call, From}, Req, State = #state{requests_waiting = ReqWaiting}) ->
   NewState0 = #state{ref_id = RefId} = next_refid(State),
   NewState = NewState0#state{requests_waiting = ReqWaiting ++ [{RefId, From, Req}]},
-  {keep_state, NewState, [reply, From, {ok, RefId}]};
+  {keep_state, NewState, [{reply, From, {ok, RefId}}]};
 handle_common(info, {tcp_closed, _Socket}, State = #state{recipient = Rec}) ->
   lager:warning("got tcp closed, when connected"),
   Rec ! {s7, self(), disconnected},
@@ -312,6 +368,20 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+maybe_start_next(State = #state{requests_waiting = []}) ->
+  lager:info("no requests waiting at the moment"),
+  State;
+maybe_start_next(State = #state{requests_waiting = [{RefId, _From, VarList} = Req|RestWaiting],
+    requests = Reqs, max_parallel_jobs = Max}) when length(Reqs) < Max ->
+  Res = read_multiple(VarList, RefId, State),
+  lager:notice("starting WAITING request: ~p",[RefId]),
+  lager:info("result from sending: ~p",[Res]),
+  NewRequests = Reqs ++ [Req],
+  lager:info("new current requests: ~p",[NewRequests]),
+  State#state{requests = NewRequests, requests_waiting = RestWaiting};
+maybe_start_next(State) ->
+  State.
+
 
 %% tcp connect
 connect(State = #state{host = Host, port = Port}) ->
@@ -443,9 +513,8 @@ handle_neg_pdu_response(_Other) ->
   {error, unexpected_pdu}.
 
 
-read_multiple(Vars, State=#state{socket = Sock}) when is_list(Vars) ->
+read_multiple(Vars, RefId, State=#state{socket = Sock}) when is_list(Vars) ->
 
-  RefId = State#state.ref_id,
   ItemCount = length(Vars),
 
   ReadItems = encode_read_items(Vars, <<>>),
@@ -520,7 +589,7 @@ handle_read_response(<<
   %% S7
   ?S7PDU_PROTOCOL_ID,
   ?S7PDU_ROSCTR_ACK_DATA,
-  _RedIdent:16, _PDURef:16, _Length:16,
+  _RedIdent:16, PDURef:16, _Length:16,
   _DataLength:16,
   ErrorClass, ErrorCode, %% byte 17, 18
   ?S7PDU_FUNCTION_READ_VAR,
@@ -530,14 +599,14 @@ handle_read_response(<<
   lager:info("read ErrorClass: ~p, ErrorCode: ~p",[ErrorClass, ErrorCode]),
   case ErrorClass /= 0 orelse ErrorCode /= 0 of
     true ->
-      {error, {
+      {error, PDURef, {
         proplists:get_value(?ERROR_CLASSES, ErrorClass, <<"unknown error class">>),
         proplists:get_value(?ERROR_CODES, ErrorCode, <<"unknown error code">>)
         }
       };
     false ->
       lager:notice("reading returned ~p items ~p",[ItemCount, Data]),
-      {ok, decode_items(Data, [])}
+      {ok, PDURef, decode_items(Data, [])}
   end;
 handle_read_response(_Other) ->
   {error, unexpected_pdu}.
@@ -549,21 +618,32 @@ decode_items(<<16#ff, _VarType, Count:16, Rest/binary>>, Acc) ->
   <<_Data:Count, NextItem/binary>> = Rest,
   decode_items(NextItem, Acc ++ [Data]);
 decode_items(<<ReturnCode, _VarType, Count:16, Rest/binary>>, Acc) ->
-  lager:warning("got return code ~p for read item",
+  lager:warning("got return code ~p for read item ~p",
     [ReturnCode, proplists:get_value(ReturnCode, ?DATA_ITEM_ERRORS, <<"unknown error">>)]),
   <<_Data:Count, NextItem/binary>> = Rest,
   decode_items(NextItem, Acc).
 
 get_plc_status(_State = #state{socket = Sock}) ->
-  Msg =
-  <<16#03, 16#00, 16#00, 16#21, 16#02, 16#f0, 16#80, 16#32, 16#07,
-    16#00, 16#00, 16#2c, 16#00, 16#00, 16#08, 16#00, 16#08, 16#00, 16#01, 16#12,
-    16#04, 16#11, 16#44, 16#01, 16#00, 16#ff, 16#09, 16#00, 16#04, 16#04, 16#24,
-    16#00, 16#00 >>,
+  Msg = ?REQUEST_GET_PLC_STATUS,
   lager:notice("send get plc status request ~p bytes",[byte_size(Msg)]),
+  inet:setopts(Sock, [{active, false}]),
   Res = gen_tcp:send(Sock, Msg),
-  lager:notice("ret from gen_tcp:send: ~p",[Res]),
-  Res.
+  Out =
+    case Res of
+      ok ->
+        case gen_tcp:recv(Sock, 0, 4000) of
+          {ok, Data} -> lager:notice("got plc status response: ~p",[Data]), decode_plc_status_response(Data);
+          {error, What} -> lager:warning("error receiving from socket: ~p",[What]), {error, What}
+        end;
+      {error, What1} -> lager:warning("error sending plc_status request : ~p",[What1]), {error, What1}
+    end,
+  inet:setopts(Sock, [{active, false}]),
+  Out.
+
+%%<<3,0,0,61,2,240,128,50,7,0,0,44,0,0,12,0,32,0,1,18,8,18,132,1,1,0,0,0,0,255,9,0,28,4,36,0,0,0,20,0,1,81,2,255,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>
+decode_plc_status_response(Data) ->
+  Status = binary:at(Data, 44),
+  #{run => (Status == 8), stop => (Status /= 8)}.
 
 
 get_cpu_info(State) ->
@@ -595,6 +675,8 @@ decode_datetime_response(Resp) ->
   %% 27:16 => 0, 29:8 => 16#ff, datetime at 35:48
   Dt = binary:part(Resp, 35, 6),
   lager:notice("datetime of plc is :~p",[Dt]),
+  <<Year:16, Month, Day, Hour, Min, Sec, MilliSec, DayOfWeek>> = <<25,34,8,48,33,25,22,113,3>>,
+  <<Year:16, Month, Day, Hour, Min, Sec, MilliSec, DayOfWeek>> = Dt,
   {ok, Dt};
 %%  case binary:part(Resp, 27, 2) of
 %%    0 ->
