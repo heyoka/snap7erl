@@ -85,6 +85,11 @@
    {timer, 16#1D}
    ]).
 
+%% internal params
+-define(INTERNAL_PARAM_PDU_REQUEST, 10).
+
+-define(INITIAL_PDU_SIZE, 960).
+
 
 -record(state, {
    port = nil,
@@ -670,6 +675,8 @@ init(#{owner := Owner, handle_connect := true, ip := Ip, rack := Rack, slot := S
    Recon = reconnect:new(
       {?RECON_MIN_INTERVAL, ?RECON_MAX_INTERVAL, ?RECON_MAX_RETRIES}),
    erlang:send_after(0, self(), reconnect),
+%%   InitPDU = call_port(State, set_params, {10, 960}),
+%%   lager:alert("initial pdu from params: ~p",[InitPDU]),
    {ok, State#state{
       ip = Ip,
       rack = Rack,
@@ -769,7 +776,7 @@ handle_call({db_read, Opts}, _From, State) ->
 handle_call({read_multi_vars, Opts}, _From, State) ->
    Data = lists:map(fun(Map) -> key2value(Map) end, Opts),
    Size = length(Data),
-   lager:notice("read_multi_vars: ~p",[Opts]),
+%%   lager:notice("read_multi_vars: ~p",[Opts]),
 %%   io:format("~nSIZE: ~p DATA: ~p~n",[Size, Data]),
    Response = call_port(State, read_multi_vars, {Size, Data}),
    {reply, Response, State};
@@ -893,21 +900,22 @@ handle_cast(_Request, State) ->
    {noreply, NewState :: #state{}, timeout() | hibernate} |
    {stop, Reason :: term(), NewState :: #state{}}).
 handle_info({Port,{exit_status, Status}}, State=#state{port = Port}) ->
-   logger:error("Port: ~p exited with status: ~p" ,[Port, Status]),
+   lager:error("Port: ~p exited with status: ~p" ,[Port, Status]),
 %%   NewPort = port_open(),
    {stop, port_exited, State};
 %%   {noreply, State#state{port = NewPort}};
 handle_info({'EXIT', Port, PosixCode}, State) ->
-   logger:warning("Port: ~p exited with Code: ~p", [Port, PosixCode]),
+   lager:warning("Port: ~p exited with Code: ~p", [Port, PosixCode]),
    {stop, port_exited, State};
 handle_info(reconnect,
     State=#state{ip = Ip, port = Port, rack = Rack, slot = Slot, owner = Owner}) ->
+   call_port(State, set_params, {?INTERNAL_PARAM_PDU_REQUEST, ?INITIAL_PDU_SIZE}),
    case do_connect(Ip, Rack, Slot, true, State) of
       {ok, NewState} ->
          Owner ! {snap7_connected, self()},
          {noreply, NewState};
       {{error, Error}, NewState} ->
-         logger:error("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port}, Error]),
+         lager:error("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port}, Error]),
          try_reconnect(NewState)
    end;
 handle_info(_Info, State) ->
@@ -951,12 +959,12 @@ try_reconnect(State=#state{reconnector = Reconnector}) ->
    case reconnect:execute(Reconnector, reconnect) of
       {ok, Reconnector1} ->
          {noreply, State#state{reconnector = Reconnector1}};
-      {stop, Error} -> logger:error("[Client: ~p] PLC reconnect error: ~p!",[?MODULE, Error]),
+      {stop, Error} -> lager:error("[Client: ~p] PLC reconnect error: ~p!",[?MODULE, Error]),
          {stop, {shutdown, Error}, State}
    end.
 
 do_connect(Ip, Rack, Slot, Active, State) ->
-   logger:info("connect to S7 ~p",[Ip]),
+   lager:info("connect to S7 ~p",[Ip]),
    Response =
       case is_binary(Ip) of
          true -> call_port(State, connect_to, {Ip, Rack, Slot});
@@ -969,7 +977,7 @@ do_connect(Ip, Rack, Slot, Active, State) ->
                     rack = Rack, slot = Slot,
                     is_active = Active};
                  {error, _W} ->
-                    logger:error("error connecting to S7 (~p), ~p",[Ip, _W]),
+                    lager:error("error connecting to S7 (~p), ~p",[Ip, _W]),
                     State#state{state = idle}
               end,
    {Response, NewState}.
@@ -979,7 +987,7 @@ port_open() ->
    os:putenv("LD_LIBRARY_PATH", Snap7Dir),
    os:putenv("DYLD_LIBRARY_PATH", Snap7Dir),
    Executable = Snap7Dir ++ "/s7_client.o",
-   logger:notice("Executable file is: ~p",[Executable]),
+   lager:notice("Executable file is: ~p",[Executable]),
    Port = open_port({spawn_executable, Executable}, [
       {args, []},
       {packet, 2},
@@ -989,7 +997,7 @@ port_open() ->
 %%      ,
 %%      {parallelism, true}
    ]),
-%%   logger:warning("Port is : ~p",[is_port(Port)]),
+%%   lager:warning("Port is : ~p",[is_port(Port)]),
    Port.
 
 call_simple(State, Command) ->
@@ -998,7 +1006,7 @@ call_simple(State, Command) ->
 call_port(State, Command, Args) ->
    call_port(State, Command, Args, ?C_TIMEOUT).
 call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
-   lager:notice("calls port with: ~p",[{Command, Args}]),
+%%   lager:notice("calls port with: ~p",[{Command, Args}]),
    Msg = {Command, Args},
 %%   ok = send_data(Port, {command, erlang:term_to_binary(Msg)}),
    Port ! {self(), {command, erlang:term_to_binary(Msg)}},
@@ -1009,11 +1017,11 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
    receive
       {_, {data, <<114, Response/binary>>}} -> binary_to_term(Response);
       {_, {exit_status, _Status}} -> exit(port_exit);
-      What -> logger:warning("received : ~p",[What])
+      What -> lager:warning("received : ~p",[What])
    %% {error,#{eiso => errIsoSendPacket,es7 => nil,etcp => 32}}
    after
       Timeout ->
-         logger:warning("port call timeout"),
+         lager:warning("port call timeout"),
          % Not sure how this can be recovered
          exit(port_timed_out)
    end,
@@ -1022,7 +1030,7 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
          %% probably lost connection to plc meanwhile, so exit I guess
          %% must exit here, no way of doing reconnect at this stage
          exit(E);
-      {error,#{}} = Err -> logger:warning("error calling s7 (~p): ~p",[Msg, Err]), Err;
+      {error,#{}} = Err -> lager:warning("error calling s7 (~p): ~p",[Msg, Err]), Err;
       _ -> Res
    end.
 

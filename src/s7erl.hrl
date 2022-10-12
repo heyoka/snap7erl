@@ -140,6 +140,24 @@
 -define(S7PDU_FUNCTION_READ_VAR, 16#04).
 -define(S7PDU_FUNCTION_WRITE_VAR, 16#05).
 
+-define(S7_READ_VAR_TYPE_BIT, 16#01).
+-define(S7_READ_VAR_TYPE_CHAR, 16#03).
+-define(S7_READ_VAR_TYPE_BYTE, 16#04).
+
+%%0x03	BIT	bit access, len is in bits
+%%0x04	BYTE/WORD/DWORD	byte/word/dword access, len is in bits
+%%0x05	INTEGER	integer access, len is in bits
+%%0x06	DINTEGER	integer access, len is in bytes
+%%0x07	REAL	real access, len is in bytes
+%%0x09	OCTET STRING	octet string, len is in bytes
+
+-define(S7_DATA_TRANSPORT_BIT, 16#03).
+-define(S7_DATA_TRANSPORT_BYTE, 16#04).
+-define(S7_DATA_TRANSPORT_INT, 16#05).
+-define(S7_DATA_TRANSPORT_DINT, 16#06).
+-define(S7_DATA_TRANSPORT_REAL, 16#07).
+-define(S7_DATA_TRANSPORT_STRING, 16#09).
+
 -define(S7PDU_FUNCTION_CODES, [
   {cpu_services, 0},
   {read_variable, 16#04},
@@ -172,7 +190,7 @@
     {char, 3},
     {word, 4},
     {int, 5},
-    {dword, 6},
+    {d_word, 6},
     {dint, 7},
     {real, 8},
     {date, 9},
