@@ -1012,7 +1012,11 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
    % doesn't want to handle any queuing of requests. REVISIT
    Res =
    receive
-      {_, {data, <<114, Response/binary>>}} -> binary_to_term(Response);
+      {_, {data, <<114, Response/binary>>}} ->
+         case catch binary_to_term(Response) of
+            {'EXIT',{badarg, _}} -> {error, bad_response};
+            Res1 -> Res1
+         end;
       {_, {exit_status, _Status}} -> exit(port_exit);
       What -> lager:warning("received : ~p",[What])
    %% {error,#{eiso => errIsoSendPacket,es7 => nil,etcp => 32}}
