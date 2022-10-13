@@ -52,7 +52,7 @@
    code_change/3]).
 
 -define(SERVER, ?MODULE).
--define(C_TIMEOUT, 3500).
+-define(C_TIMEOUT, 5000).
 -define(BLOCK_TYPES, [
    {ob, 16#38},
    {db, 16#41},
@@ -1022,9 +1022,8 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
             {'EXIT',{badarg, _}} -> {error, bad_response};
             Res1 -> Res1
          end;
-      {_, {exit_status, _Status}} -> exit(port_exit)
-%%   ;
-%%      What -> lager:warning("received : ~p",[What])
+      {_, {exit_status, _Status}} -> exit(port_exit);
+      What -> lager:warning("received : ~p",[What])
    %% {error,#{eiso => errIsoSendPacket,es7 => nil,etcp => 32}}
    after
       Timeout ->
