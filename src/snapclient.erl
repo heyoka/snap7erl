@@ -15,7 +15,7 @@
 %% API
 -export([start_link/1, stop/1,
    connect_to/2, set_connection_type/2, set_connection_params/2,
-   connect/1, disconnect/1, get_params/2, set_params/3, start/1, start_connect/1]).
+   connect/1, disconnect/1, get_params/2, set_params/3, start/1, start_connect/1, get_all_params/1]).
 
 -export([
    read_area/2, write_area/2,
@@ -88,7 +88,8 @@
 %% internal params
 -define(INTERNAL_PARAM_PDU_REQUEST, 10).
 
--define(INITIAL_PDU_SIZE, 960).
+%%-define(INITIAL_PDU_SIZE, 960).
+-define(INITIAL_PDU_SIZE, 480).
 
 
 -record(state, {
@@ -129,7 +130,11 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
+get_all_params(Pid) ->
+   SendTimeout = get_params(Pid, 4),
+   RecvTimeout = get_params(Pid, 5),
+   PDU = get_params(Pid, 10),
+   #{send_timeout => SendTimeout, recv_timeout => RecvTimeout, pdu_size => PDU}.
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
@@ -141,6 +146,7 @@ start(Opts) ->
    gen_server:start(?MODULE, Opts, []).
 %% @doc start the server and let the server handle connection and reconnection
 start_connect(Opts) when is_map(Opts) ->
+   lager:notice("~p start_connect with ~p",[?MODULE, Opts]),
    gen_server:start(?MODULE, Opts#{owner => self(), handle_connect => true}, []).
 
 -spec(start_link(Opts :: list()) ->
@@ -984,7 +990,6 @@ port_open() ->
    os:putenv("LD_LIBRARY_PATH", Snap7Dir),
    os:putenv("DYLD_LIBRARY_PATH", Snap7Dir),
    Executable = Snap7Dir ++ "/s7_client.o",
-   lager:notice("Executable file is: ~p",[Executable]),
    Port = open_port({spawn_executable, Executable}, [
       {args, []},
       {packet, 2},
@@ -1017,8 +1022,9 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
             {'EXIT',{badarg, _}} -> {error, bad_response};
             Res1 -> Res1
          end;
-      {_, {exit_status, _Status}} -> exit(port_exit);
-      What -> lager:warning("received : ~p",[What])
+      {_, {exit_status, _Status}} -> exit(port_exit)
+%%   ;
+%%      What -> lager:warning("received : ~p",[What])
    %% {error,#{eiso => errIsoSendPacket,es7 => nil,etcp => 32}}
    after
       Timeout ->
