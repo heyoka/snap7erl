@@ -89,7 +89,7 @@
 -define(INTERNAL_PARAM_PDU_REQUEST, 10).
 
 %%-define(INITIAL_PDU_SIZE, 960).
--define(INITIAL_PDU_SIZE, 480).
+-define(INITIAL_PDU_SIZE, 360).
 
 
 -record(state, {
@@ -912,7 +912,7 @@ handle_info({'EXIT', Port, PosixCode}, State) ->
    {stop, port_exited, State};
 handle_info(reconnect,
     State=#state{ip = Ip, port = Port, rack = Rack, slot = Slot, owner = Owner}) ->
-%%   call_port(State, set_params, {?INTERNAL_PARAM_PDU_REQUEST, ?INITIAL_PDU_SIZE}),
+   call_port(State, set_params, {?INTERNAL_PARAM_PDU_REQUEST, ?INITIAL_PDU_SIZE}),
    case do_connect(Ip, Rack, Slot, true, State) of
       {ok, NewState} ->
          Owner ! {snap7_connected, self()},
@@ -1022,9 +1022,9 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
             {'EXIT',{badarg, _}} -> {error, bad_response};
             Res1 -> Res1
          end;
-      {_, {exit_status, _Status}} -> exit(port_exit);
-      What -> lager:warning("received : ~p",[What])
-   %% {error,#{eiso => errIsoSendPacket,es7 => nil,etcp => 32}}
+      {_, {exit_status, _Status}} ->
+         lager:warning("port exit status: ~p",[_Status]),
+         exit(port_exit)
    after
       Timeout ->
          lager:warning("port call timeout"),
@@ -1032,10 +1032,11 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
          exit(port_timed_out)
    end,
    case Res of
-      {error,#{eiso := E}} when E == errIsoRecvPacket; E == errIsoSendPacket ->
+      {error,#{eiso := E}} = Er when E == errIsoRecvPacket; E == errIsoSendPacket ->
          %% probably lost connection to plc meanwhile, so exit I guess
          %% must exit here, no way of doing reconnect at this stage
-         exit(E);
+         lager:warning("Error result: ~p",[Er]),
+         <<>>;
       {error,#{}} = Err -> lager:warning("error calling s7 (~p): ~p",[Msg, Err]), Err;
       _ -> Res
    end.
