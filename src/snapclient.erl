@@ -89,7 +89,7 @@
 -define(INTERNAL_PARAM_PDU_REQUEST, 10).
 
 %%-define(INITIAL_PDU_SIZE, 960).
--define(INITIAL_PDU_SIZE, 360).
+-define(INITIAL_PDU_SIZE, 240).
 
 
 -record(state, {
