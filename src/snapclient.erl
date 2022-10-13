@@ -912,7 +912,7 @@ handle_info({'EXIT', Port, PosixCode}, State) ->
    {stop, port_exited, State};
 handle_info(reconnect,
     State=#state{ip = Ip, port = Port, rack = Rack, slot = Slot, owner = Owner}) ->
-   call_port(State, set_params, {?INTERNAL_PARAM_PDU_REQUEST, ?INITIAL_PDU_SIZE}),
+%%   call_port(State, set_params, {?INTERNAL_PARAM_PDU_REQUEST, ?INITIAL_PDU_SIZE}),
    case do_connect(Ip, Rack, Slot, true, State) of
       {ok, NewState} ->
          Owner ! {snap7_connected, self()},
