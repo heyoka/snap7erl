@@ -240,6 +240,12 @@ data_type(<<"X">>) -> {bit, bool};
 data_type(<<"B">>) -> data_type(<<"BYTE">>);
 data_type(<<"BYTE">>) -> {byte, byte};
 
+data_type(<<"SI">>) -> data_type(<<"SINT">>);
+data_type(<<"SINT">>) -> {byte, sint};
+
+data_type(<<"USI">>) -> data_type(<<"USINT">>);
+data_type(<<"USINT">>) -> {byte, usint};
+
 data_type(<<"C">>) -> data_type(<<"CHAR">>);
 data_type(<<"CHAR">>) -> {byte, char};
 
