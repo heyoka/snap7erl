@@ -256,7 +256,9 @@ data_type(<<"DW">>) -> data_type(<<"DWORD">>);
 data_type(<<"DWORD">>) -> {d_word, d_word};
 
 data_type(<<"S">>) -> data_type(<<"STRING">>);
-data_type(<<"STRING">>) -> {byte, string}.
+data_type(<<"STRING">>) -> {byte, string};
+
+data_type(_) -> {error, invalid_data_type}.
 
 
 %%%%%
