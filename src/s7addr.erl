@@ -73,7 +73,7 @@ parse_db([NoBitAccess], Params, Offset) ->
          case (catch binary_to_integer(StartAddr)) of
             Start when is_integer(Start) ->
                {DType, CDType} = data_type(DataType),
-               Params#{word_len => DType, start => Start + Offset, dtype => CDType};
+               Params#{word_len => DType, start => Start + Offset, dtype => CDType, amount => amount(CDType)};
             _ -> {error, invalid}
          end
    end;
@@ -258,6 +258,13 @@ data_type(<<"DWORD">>) -> {d_word, d_word};
 data_type(<<"S">>) -> data_type(<<"STRING">>);
 data_type(<<"STRING">>) -> {byte, string};
 
+data_type(<<"DTZ">>) -> data_type(<<"DT">>);
+data_type(<<"DT">>) -> {byte, dt};
+data_type(<<"DTLZ">>) -> data_type(<<"DTL">>);
+data_type(<<"DTL">>) -> {byte, dtl};
+data_type(<<"LTIME">>) -> {byte, ltime};
+
+
 data_type(_) -> {error, invalid_data_type}.
 
 
@@ -267,6 +274,11 @@ start_amount(WordType, StartMarker, BitMarker) ->
       bit   -> {StartMarker * 8 + binary_to_integer(BitMarker), 1};
       _     -> {StartMarker, binary_to_integer(BitMarker)}
    end.
+
+amount(dt) -> 8;
+amount(dtl) -> 12;
+amount(ltime) -> 8;
+amount(_) -> 1.
 
 
 -ifdef(TEST).
@@ -299,5 +311,40 @@ basic_bool_invalid_test() ->
 basic_invalid_2_test() ->
    A = <<"DB34.DBW">>,
    ?assertEqual({error, invalid}, parse(A)).
+
+date_time_test() ->
+   A = <<"DB7.DBDT4">>,
+   Res = #{amount => 8, area => db, db_number => 7, dtype => dt, start => 4, word_len => byte},
+   ?assertEqual(Res, parse(A, 0)).
+
+date_time_l_test() ->
+   A = <<"DB32.DBDTL4">>,
+   Res = #{amount => 12, area => db, db_number => 32, dtype => dtl, start => 6, word_len => byte},
+   ?assertEqual(Res, parse(A, 2)).
+
+ltime_test() ->
+   A = <<"DB7.DBLTime4">>,
+   Res = #{amount => 8, area => db, db_number => 7, dtype => ltime, start => 4, word_len => byte},
+   ?assertEqual(Res, parse(A, 0)).
+
+date_time_alt_test() ->
+   A = <<"DB7.DT4">>,
+   Res = #{amount => 8, area => db, db_number => 7, dtype => dt, start => 4, word_len => byte},
+   ?assertEqual(Res, parse(A, 0)).
+
+date_time_l_alt_test() ->
+   A = <<"DB32.DTL4">>,
+   Res = #{amount => 12, area => db, db_number => 32, dtype => dtl, start => 6, word_len => byte},
+   ?assertEqual(Res, parse(A, 2)).
+
+date_time_l_utc_alt_test() ->
+   A = <<"DB32.DTLZ4">>,
+   Res = #{amount => 12, area => db, db_number => 32, dtype => dtl, start => 6, word_len => byte},
+   ?assertEqual(Res, parse(A, 2)).
+
+ltime_alt_test() ->
+   A = <<"DB7.LTime4">>,
+   Res = #{amount => 8, area => db, db_number => 7, dtype => ltime, start => 4, word_len => byte},
+   ?assertEqual(Res, parse(A, 0)).
 
 -endif.
