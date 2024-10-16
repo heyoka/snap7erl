@@ -28,7 +28,7 @@ parse(Address, Offset, return_list) when is_binary(Address), is_integer(Offset) 
 parse(Address) when is_binary(Address) ->
    parse(Address, 0).
 parse(Address, return_list) when is_binary(Address) ->
-   parse(Address, return_list);
+   parse(Address, 0, return_list);
 parse(Address, Offset) when is_binary(Address), is_integer(Offset) ->
    Addr = string:uppercase(Address),
    %% trim whitespace
@@ -43,7 +43,9 @@ parse(Address, Offset) when is_binary(Address), is_integer(Offset) ->
             end,
          do_parse(binary:split(Clean, Pattern, [trim_all]), Offset);
 
-      _ ->  do_parse(Clean, Offset)
+      _ ->
+%%         lager:info("do_parse(~p, 0)",[Clean]),
+         do_parse(Clean, Offset)
    end.
 
 %% non db address
@@ -59,6 +61,8 @@ do_parse([<<"DB", DbNumber/binary>>, Part2], Offset) ->
    P = #{area => db, amount => 1, db_number => binary_to_integer(DbNumber)},
    Parts = binary:split(Part2, <<".">>, [trim_all]),
    parse_db(Parts, P, Offset);
+do_parse(String, Offset) when is_binary(String) ->
+   parse_non_db(String, Offset);
 do_parse(_, _) -> {error, invalid}.
 
 %% second part after comma !
@@ -98,10 +102,9 @@ parse_non_db([NoBitAccess], Par, Offset) ->
    Area = clear_numbers(NoBitAccess),
    Size = byte_size(Area),
    <<Area:Size/binary, StartAddr/binary>> = NoBitAccess,
-%%   P = type(Area, Par#{start => binary_to_integer(StartAddr)+Offset}),
    P = type(Area, Par#{}),
    case P of
-      _ when is_map(P) -> {P#{start => binary_to_integer(StartAddr)+Offset}, NoBitAccess};
+      _ when is_map(P) -> P#{start => binary_to_integer(StartAddr)+Offset};
       _ -> P
    end;
 parse_non_db([WithBitAccess, Bit], Par, Offset) ->
@@ -112,9 +115,14 @@ parse_non_db([WithBitAccess, Bit], Par, Offset) ->
    case P of
       _ when is_map(P) ->
          {Start, Amount} = start_amount(maps:get(word_len, P), binary_to_integer(StartAddr)+Offset, Bit),
-         {P#{start => Start, amount => Amount}, WithBitAccess, Bit};
+         P#{start => Start, amount => Amount};
       {error, invalid} -> {error, invalid}
    end.
+
+parse_non_db(String, Offset) ->
+   Parts = binary:split(String, <<".">>, [trim_all]),
+   parse_non_db(Parts, #{}, Offset)
+.
 
 clear_numbers(Bin) ->
    re:replace(Bin, "[0-9]", <<>>, [{return, binary}, global]).
@@ -196,6 +204,8 @@ type(<<"AR">>, P) ->
 
 %%% markers
 type(<<"M">>, P) ->
+   P#{area => mk, word_len => bit, dtype => bool};
+type(<<"QM">>, P) ->
    P#{area => mk, word_len => bit, dtype => bool};
 type(<<"MB">>, P) ->
    P#{area => mk, word_len => byte, dtype => byte};
@@ -298,10 +308,11 @@ basic_real_offset_test() ->
    Offset = 30,
    Res = #{amount => 1, area => db, db_number => 34, dtype => float, start => 44, word_len => real},
    ?assertEqual(Res, parse(A, Offset)).
-%%basic_nondb_test() ->
-%%   A = <<"QM3.2">>,
-%%   Res = #{amount => 1, area => db, db_number => 34, dtype => bool, start => 26, word_len => bit},
-%%   ?assertEqual(Res, parse(A)).
+basic_nondb_test() ->
+   A = <<"QM3.2">>,
+   Res = #{amount => 1,area => mk,dtype => bool,start => 26,
+      word_len => bit},
+   ?assertEqual(Res, parse(A)).
 basic_invalid_test() ->
    A = <<"DB34.DBR14.0">>,
    ?assertEqual({error, invalid}, parse(A)).
@@ -347,4 +358,14 @@ ltime_alt_test() ->
    Res = #{amount => 8, area => db, db_number => 7, dtype => ltime, start => 4, word_len => byte},
    ?assertEqual(Res, parse(A, 0)).
 
+mem_area_1_test() ->
+   A = <<"MW26">>,
+   Res = #{area => mk,dtype => word,start => 26,word_len => word},
+   ?assertEqual(Res, parse(A, 0)).
+
+
+non_db_2_test() ->
+   A = <<"MDI16">>,
+   Res = #{area => mk,dtype => d_int,start => 18,word_len => d_word},
+   ?assertEqual(Res, parse(A, 2)).
 -endif.
