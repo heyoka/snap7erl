@@ -52,7 +52,7 @@
    code_change/3]).
 
 -define(SERVER, ?MODULE).
--define(C_TIMEOUT, 5000).
+-define(C_TIMEOUT, 7000).
 -define(BLOCK_TYPES, [
    {ob, 16#38},
    {db, 16#41},
@@ -88,8 +88,8 @@
 %% internal params
 -define(INTERNAL_PARAM_PDU_REQUEST, 10).
 
-%%-define(INITIAL_PDU_SIZE, 960).
--define(INITIAL_PDU_SIZE, 240).
+-define(INITIAL_PDU_SIZE, 960).
+%%-define(INITIAL_PDU_SIZE, 240).
 
 
 -record(state, {
@@ -770,9 +770,9 @@ handle_call({write_area, Opts}, _From, State) ->
 
 
 handle_call({db_read, Opts}, _From, State) ->
-   DbNumber = proplists:get_value(db_number, Opts, 0),
-   Start = proplists:get_value(start, Opts, 0),
-   Amount = proplists:get_value(amount, Opts, 0),
+   DbNumber = maps:get(db_number, Opts, 0),
+   Start = maps:get(start, Opts, 0),
+   Amount = maps:get(amount, Opts, 0),
    Response = call_port(State, db_read, {DbNumber, Start, Amount}),
    {reply, Response, State};
 
@@ -835,8 +835,12 @@ handle_call(get_pdu_length, _From, State) ->
    Res = call_port(State, get_pdu_length, nil),
    Response =
    case Res of
-      {ok, [{'Requested', _}, {'Negotiated', PduLength}]} -> {ok, PduLength};
-      _ -> {ok, 0}
+      {ok, [{'Requested', Requested}, {'Negotiated', PduLength}]} ->
+         lager:info("requested pdu length: ~p",[Requested]),
+         {ok, PduLength};
+      _W ->
+         lager:warning("PDU length get error: ~p",[_W]),
+         {ok, 0}
    end,
    {reply, Response, State};
 
@@ -981,6 +985,9 @@ do_connect(Ip, Rack, Slot, Active, State) ->
                     is_active = Active};
                  {error, _W} ->
                     lager:error("error connecting to S7 (~p), ~p",[Ip, _W]),
+                    State#state{state = idle};
+                 Other ->
+                    lager:error("error connecting to S7 (~p), ~p",[Ip, Other]),
                     State#state{state = idle}
               end,
    {Response, NewState}.
