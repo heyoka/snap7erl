@@ -86,9 +86,10 @@
    ]).
 
 %% internal params
--define(INTERNAL_PARAM_PDU_REQUEST, 10).
+-define(INTERNAL_PARAM_PDU_REQUEST, 16#A).
 
--define(INITIAL_PDU_SIZE, 960).
+%%-define(INITIAL_PDU_SIZE, 960).
+-define(INITIAL_PDU_SIZE, 480).
 %%-define(INITIAL_PDU_SIZE, 240).
 
 
