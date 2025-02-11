@@ -90,8 +90,8 @@
 
 %%-define(INITIAL_PDU_SIZE, 960).
 %%-define(INITIAL_PDU_SIZE, 480).
--define(INITIAL_PDU_SIZE, 360).
-%%-define(INITIAL_PDU_SIZE, 240).
+%%-define(INITIAL_PDU_SIZE, 360).
+-define(INITIAL_PDU_SIZE, 240).
 
 
 -record(state, {
@@ -1028,9 +1028,7 @@ call_port(_State = #state{port = Port}, Command, Args, Timeout) ->
    receive
       {_, {data, <<114, Response/binary>>}} ->
          case catch binary_to_term(Response) of
-            {'EXIT',{badarg, _}} ->
-              lager:warning("got bad response ~p",[Response]),
-              {error, bad_response};
+            {'EXIT',{badarg, _}} -> {error, bad_response};
             Res1 -> Res1
          end;
       {_, {exit_status, _Status}} ->
