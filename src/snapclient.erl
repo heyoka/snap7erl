@@ -52,7 +52,7 @@
    code_change/3]).
 
 -define(SERVER, ?MODULE).
--define(C_TIMEOUT, 7000).
+-define(C_TIMEOUT, 12000).
 -define(BLOCK_TYPES, [
    {ob, 16#38},
    {db, 16#41},
@@ -89,9 +89,9 @@
 -define(INTERNAL_PARAM_PDU_REQUEST, 16#A).
 
 %%-define(INITIAL_PDU_SIZE, 960).
-%%-define(INITIAL_PDU_SIZE, 480).
+-define(INITIAL_PDU_SIZE, 480).
 %%-define(INITIAL_PDU_SIZE, 360).
--define(INITIAL_PDU_SIZE, 240).
+%%-define(INITIAL_PDU_SIZE, 240).
 
 
 -record(state, {
