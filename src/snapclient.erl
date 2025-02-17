@@ -923,8 +923,8 @@ handle_info(reconnect,
       {ok, NewState} ->
          Owner ! {snap7_connected, self()},
          {noreply, NewState};
-      {{error, Error}, NewState} ->
-         lager:error("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port}, Error]),
+      {What, NewState} ->
+         lager:warning("[~p] Error connecting to PLC ~p: ~p",[?MODULE, {Ip, Port}, What]),
          try_reconnect(NewState)
    end;
 handle_info(_Info, State) ->
